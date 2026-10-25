@@ -1,0 +1,23 @@
+{
+	"schemaVersion": 1,
+	"id": "mining-tracker",
+	"version": "${version}",
+	"name": "광질 측정 (Mining Tracker)",
+	"description": "캔 블록과 먹은 광물을 세서 화면에 보여주는 클라이언트 모드. 아이템 저장소로 들어간 것과 인벤토리로 들어온 것을 나눠서 보여줘요.",
+	"icon": "assets/mining-tracker/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"com.miningtracker.MiningTrackerClient"
+		]
+	},
+	"mixins": [
+		"mining-tracker.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.16.0",
+		"minecraft": "~1.21.4",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}

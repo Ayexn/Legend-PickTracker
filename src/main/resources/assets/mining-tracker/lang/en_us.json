@@ -1,0 +1,7 @@
+{
+	"key.categories.mining-tracker": "Mining Tracker",
+	"key.mining-tracker.toggle": "Show/hide tally board",
+	"key.mining-tracker.pause": "Pause/resume tracking",
+	"key.mining-tracker.reset": "Reset counts (press twice)",
+	"key.mining-tracker.edit": "Edit HUD position/size"
+}

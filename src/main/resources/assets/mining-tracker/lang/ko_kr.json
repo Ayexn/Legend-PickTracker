@@ -1,0 +1,7 @@
+{
+	"key.categories.mining-tracker": "광질 측정",
+	"key.mining-tracker.toggle": "집계판 보이기/숨기기",
+	"key.mining-tracker.pause": "측정 일시정지/다시 시작",
+	"key.mining-tracker.reset": "기록 초기화 (두 번 누르기)",
+	"key.mining-tracker.edit": "HUD 위치·크기 편집"
+}
