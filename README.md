@@ -71,7 +71,9 @@
 
 1. 깃허브에 파일을 올리면 위쪽 **Actions** 탭에서 `build`가 자동으로 실행돼요.
 2. 초록색 체크가 뜨면 그 실행을 누르고, 아래쪽 **Artifacts**에서 `mining-tracker`를 내려받으세요.
-3. 압축을 풀면 `mining-tracker-x.y.z.jar`가 있어요.
+3. 압축을 풀면 파일이 두 개 있어요.
+   - `mining-tracker-x.y.z.jar`: 모드 파일이에요. 이것만 `mods` 폴더에 넣으세요.
+   - `mining-tracker-x.y.z-sources.jar`: 소스 코드예요. 운영진에게 소스 코드를 보여줄 때 쓰고, `mods` 폴더에는 넣지 마세요.
 
 버전은 `gradle.properties`의 `version=`에서 바꿔요. 작은 수정은 맨 오른쪽 숫자를, 큰 변경은 가운데나 왼쪽 숫자를 올려요.
 
