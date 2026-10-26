@@ -3,7 +3,7 @@
 	"id": "mining-tracker",
 	"version": "${version}",
 	"name": "광질 측정 (Mining Tracker)",
-	"description": "캔 블록과 먹은 광물을 세서 화면에 보여주는 클라이언트 모드. 아이템 저장소로 들어간 것과 인벤토리로 들어온 것을 나눠서 보여줘요.",
+	"description": "캔 블록과 먹은 광물을 세서 화면에 보여주는 클라이언트 모드. 야생에서 곡괭이로 광질을 시작하면 자동으로 기록하고, 한동안 안 캐면 기록을 끝내요.",
 	"icon": "assets/mining-tracker/icon.png",
 	"environment": "client",
 	"entrypoints": {

@@ -9,17 +9,28 @@ import java.util.List;
 
 /** Drag the board and the toasts to move them, scroll over them to resize. ESC saves. */
 public final class EditHudScreen extends Screen {
-	private enum Target { NONE, PANEL, TOASTS }
+	private enum Target { NONE, BOARD, TOASTS }
 
+	/** Screen to go back to when closing (the settings screen), or null to go back to the game. */
+	private final Screen parent;
 	private final List<ToastManager.Toast> sampleToasts = HudRenderer.sampleToasts();
 	private Target dragging = Target.NONE;
 	private double grabX;
 	private double grabY;
-	private float[] panelRect = new float[4];
+	private float[] boardRect = new float[4];
 	private float[] toastRect = new float[4];
 
-	public EditHudScreen() {
+	public EditHudScreen(Screen parent) {
 		super(Component.literal("광질 측정 HUD 편집"));
+		this.parent = parent;
+	}
+
+	private static boolean isBar(ModConfig cfg) {
+		return cfg.hudLayout() == HudLayout.BAR;
+	}
+
+	private static float boardScale(ModConfig cfg) {
+		return isBar(cfg) ? cfg.barScale : cfg.panelScale;
 	}
 
 	@Override
@@ -32,19 +43,22 @@ public final class EditHudScreen extends Screen {
 		g.fill(0, 0, this.width, this.height, 0x40000000);
 
 		ModConfig cfg = ModConfig.get();
+		Theme theme = cfg.currentTheme();
 		Tracker tracker = Tracker.INSTANCE;
-		HudRenderer.Panel panel = tracker.isEmpty() ? HudRenderer.samplePanel(tracker) : HudRenderer.fromTracker(tracker, cfg);
-		panelRect = HudRenderer.drawPanel(g, this.font, panel, cfg.panelX, cfg.panelY, cfg.panelScale);
-		toastRect = HudRenderer.drawToastsStatic(g, this.font, sampleToasts, cfg);
+		HudRenderer.Panel panel = tracker.isEmpty() ? HudRenderer.samplePanel() : HudRenderer.fromTracker(tracker, cfg);
+		boardRect = HudRenderer.drawBoard(g, this.font, panel, cfg, theme);
+		toastRect = HudRenderer.drawToastsStatic(g, this.font, sampleToasts, cfg, theme);
 
-		outline(g, panelRect, color(Target.PANEL, panelRect, mouseX, mouseY));
+		outline(g, boardRect, color(Target.BOARD, boardRect, mouseX, mouseY));
 		outline(g, toastRect, color(Target.TOASTS, toastRect, mouseX, mouseY));
-		label(g, "집계판 " + percent(cfg.panelScale), panelRect);
+		label(g, "집계판 " + percent(boardScale(cfg)), boardRect);
 		label(g, "획득 알림 " + percent(cfg.toastScale), toastRect);
 
 		int cx = this.width / 2;
-		g.drawCenteredString(this.font, "끌어서 위치 이동  ·  마우스 휠로 크기 조절", cx, 8, 0xFFFFFFFF);
-		g.drawCenteredString(this.font, "R: 기본 위치로  ·  ESC: 저장하고 닫기", cx, 20, 0xFFB8C0CC);
+		int top = isBar(cfg) ? Math.max(8, (int) (boardRect[1] + boardRect[3]) + 18) : 8;
+		g.drawCenteredString(this.font, "끌어서 위치 이동  ·  마우스 휠로 크기 조절", cx, top, 0xFFFFFFFF);
+		g.drawCenteredString(this.font, parent != null ? "R: 기본 위치로  ·  ESC: 저장하고 설정으로" : "R: 기본 위치로  ·  ESC: 저장하고 닫기",
+				cx, top + 12, 0xFFB8C0CC);
 	}
 
 	private int color(Target target, float[] rect, int mouseX, int mouseY) {
@@ -57,7 +71,7 @@ public final class EditHudScreen extends Screen {
 	private void label(GuiGraphics g, String text, float[] rect) {
 		int x = (int) rect[0];
 		int y = (int) rect[1] - 11;
-		if (y < 32) {
+		if (y < 2) {
 			y = (int) (rect[1] + rect[3]) + 3;
 		}
 		g.drawString(this.font, text, x, y, 0xFFFFFFFF, true);
@@ -85,10 +99,10 @@ public final class EditHudScreen extends Screen {
 	@Override
 	public boolean mouseClicked(double mouseX, double mouseY, int button) {
 		if (button == 0) {
-			if (inside(panelRect, mouseX, mouseY)) {
-				dragging = Target.PANEL;
-				grabX = mouseX - panelRect[0];
-				grabY = mouseY - panelRect[1];
+			if (inside(boardRect, mouseX, mouseY)) {
+				dragging = Target.BOARD;
+				grabX = mouseX - boardRect[0];
+				grabY = mouseY - boardRect[1];
 				return true;
 			}
 			if (inside(toastRect, mouseX, mouseY)) {
@@ -104,9 +118,16 @@ public final class EditHudScreen extends Screen {
 	@Override
 	public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
 		ModConfig cfg = ModConfig.get();
-		if (dragging == Target.PANEL) {
-			cfg.panelX = (float) (mouseX - grabX);
-			cfg.panelY = (float) (mouseY - grabY);
+		if (dragging == Target.BOARD) {
+			float x = (float) (mouseX - grabX);
+			float y = (float) (mouseY - grabY);
+			if (isBar(cfg)) {
+				cfg.barCenterX = x + boardRect[2] / 2f;
+				cfg.barY = y;
+			} else {
+				cfg.panelX = x;
+				cfg.panelY = y;
+			}
 			return true;
 		}
 		if (dragging == Target.TOASTS) {
@@ -122,11 +143,19 @@ public final class EditHudScreen extends Screen {
 	public boolean mouseReleased(double mouseX, double mouseY, int button) {
 		if (dragging != Target.NONE) {
 			ModConfig cfg = ModConfig.get();
-			// keep what was actually drawn (it is clamped to the screen)
-			cfg.panelX = panelRect[0];
-			cfg.panelY = panelRect[1];
-			cfg.toastRight = this.width - (toastRect[0] + toastRect[2]);
-			cfg.toastY = toastRect[1];
+			// keep what was actually drawn (it is kept on the screen)
+			if (dragging == Target.BOARD) {
+				if (isBar(cfg)) {
+					cfg.barCenterX = boardRect[0] + boardRect[2] / 2f;
+					cfg.barY = boardRect[1];
+				} else {
+					cfg.panelX = boardRect[0];
+					cfg.panelY = boardRect[1];
+				}
+			} else {
+				cfg.toastRight = this.width - (toastRect[0] + toastRect[2]);
+				cfg.toastY = toastRect[1];
+			}
 			dragging = Target.NONE;
 			return true;
 		}
@@ -140,8 +169,12 @@ public final class EditHudScreen extends Screen {
 		}
 		float step = scrollY > 0 ? 0.05f : -0.05f;
 		ModConfig cfg = ModConfig.get();
-		if (inside(panelRect, mouseX, mouseY)) {
-			cfg.panelScale = ModConfig.clampScale(cfg.panelScale + step);
+		if (inside(boardRect, mouseX, mouseY)) {
+			if (isBar(cfg)) {
+				cfg.barScale = ModConfig.clampScale(cfg.barScale + step);
+			} else {
+				cfg.panelScale = ModConfig.clampScale(cfg.panelScale + step);
+			}
 			return true;
 		}
 		if (inside(toastRect, mouseX, mouseY)) {
@@ -163,7 +196,7 @@ public final class EditHudScreen extends Screen {
 	@Override
 	public void onClose() {
 		ModConfig.save();
-		super.onClose();
+		this.minecraft.setScreen(parent);
 	}
 
 	@Override

@@ -15,61 +15,46 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Draws the tally board (집계판) and the pickup toasts (획득 알림).
+ * Draws the tally board (집계판) in the chosen layout and the pickup toasts (획득 알림), in the chosen theme.
  *
- * <p>Layout numbers are in "panel pixels": everything is drawn inside a pose scaled by the
- * configured scale (default 2/3, which matches the size of the server's own HUD panels at GUI
- * scale 3). Item icons are the game's real item icons, drawn at half size.
+ * <p>Layout numbers are in "panel pixels": everything is drawn inside a pose scaled by the configured
+ * scale (default 2/3, which matches the size of the server's own HUD panels at GUI scale 3). Item icons
+ * are the game's real item icons.
  */
 public final class HudRenderer {
-	static final int EDGE = 0xFF0F0F0F;
-	static final int BORDER = 0xFF383D4A;
-	static final int BG = 0xFF202326;
-	static final int RULE = 0xFF3664BD;
-	static final int TEXT = 0xFFEBEEF2;
-	static final int HEAD = 0xFFFCFCFC;
-	static final int SUB = 0xFF9DB6D5;
-	static final int GREEN = 0xFF7BC37B;
-	static final int YELLOW = 0xFFE3C46A;
-	static final int LABEL = 0xFF6E9EEB;
-	static final int DIM = 0xFF808A98;
-	static final int ZERO = 0xFF565E6C;
-	static final int SEP = 0xFF30353E;
-	static final int PLUS = 0xFF8AE28A;
-	static final int TAG_INV = 0xFFDEC48C;
-
 	static final int PITCH = 12;
 	static final int MIN_WIDTH = 182;
 	static final int NAME_MAX = 124;
 	static final int TOAST_HEIGHT = 14;
 	static final int TOAST_GAP = 3;
+	/** Rates (per minute / per hour) appear once this much time has been measured. */
+	static final int RATE_MIN_SECONDS = 30;
+	static final int SLOT = 22;
+	static final int SLOT_GAP = 2;
+	static final int SLOT_ROWS = 2;
+	static final int BAR_HEIGHT = 14;
+	static final int BAR_MAX_ITEMS = 8;
 
 	private static ItemStack headerIcon;
 
 	private HudRenderer() {
 	}
 
-	/** One line of the board. For item rows a = total, b = storage, c = inventory. */
-	record Row(ItemStack icon, String name, long a, long b, long c, int color, boolean dots) {
+	/** One line of the board: icon, name and a count. {@code dots}: "외 N종" (no icon). */
+	record Row(ItemStack icon, String name, long count, boolean dim, boolean dots) {
 	}
 
 	static final class Panel {
 		String time = "00:00";
-		boolean running = true;
+		boolean resting;
+		long seconds;
 		long totalBlocks;
 		final List<Row> blockRows = new ArrayList<>();
 		Row blockMore;
-		final List<Row> itemRows = new ArrayList<>();
-		Row itemMore;
+		/** All minerals, most first. */
+		final List<Row> minerals = new ArrayList<>();
+		long totalMinerals;
 		Row otherRow;
-	}
-
-	private static final class Layout {
-		int width;
-		int height;
-		int colAll;
-		int colStore;
-		int colInv;
 	}
 
 	// ------------------------------------------------------------------ entry point
@@ -83,13 +68,24 @@ public final class HudRenderer {
 			return; // the editor draws its own preview
 		}
 		ModConfig cfg = ModConfig.get();
+		Theme theme = cfg.currentTheme();
 		Tracker tracker = Tracker.INSTANCE;
-		if (cfg.hudVisible) {
-			drawPanel(g, mc.font, fromTracker(tracker, cfg), cfg.panelX, cfg.panelY, cfg.panelScale);
+		if (cfg.hudVisible && tracker.isRecording()) {
+			drawBoard(g, mc.font, fromTracker(tracker, cfg), cfg, theme);
 		}
 		if (cfg.toastsEnabled) {
-			drawToasts(g, mc.font, tracker.toasts.list(), tracker.tick(), delta.getGameTimeDeltaPartialTick(false), cfg);
+			drawToasts(g, mc.font, tracker.toasts.list(), tracker.tick(), delta.getGameTimeDeltaPartialTick(false), cfg, theme);
 		}
+	}
+
+	/** Draws the board in the chosen layout and returns where it ended up: {x, y, width, height} in GUI pixels. */
+	static float[] drawBoard(GuiGraphics g, Font font, Panel p, ModConfig cfg, Theme theme) {
+		return switch (cfg.hudLayout()) {
+			case DETAIL -> drawDetail(g, font, p, cfg, theme);
+			case SLIM -> drawSlim(g, font, p, cfg, theme);
+			case ICONS -> drawIcons(g, font, p, cfg, theme);
+			case BAR -> drawBar(g, font, p, cfg, theme);
+		};
 	}
 
 	// ------------------------------------------------------------------ data
@@ -97,79 +93,65 @@ public final class HudRenderer {
 	static Panel fromTracker(Tracker tracker, ModConfig cfg) {
 		Panel p = new Panel();
 		p.time = formatTime(tracker.activeTicks());
-		p.running = tracker.isRunning();
+		p.seconds = tracker.activeTicks() / 20;
+		p.resting = tracker.isResting();
 
 		List<Tracker.BlockTally> blocks = tracker.sortedBlocks();
-		long total = 0;
 		for (Tracker.BlockTally b : blocks) {
-			total += b.count;
+			p.totalBlocks += b.count;
 		}
-		p.totalBlocks = total;
 		int shown = Math.min(blocks.size(), cfg.maxBlockRows);
 		for (int i = 0; i < shown; i++) {
 			Tracker.BlockTally b = blocks.get(i);
-			p.blockRows.add(new Row(b.icon, b.name, b.count, 0, 0, TEXT, false));
+			p.blockRows.add(new Row(b.icon, b.name, b.count, false, false));
 		}
 		if (blocks.size() > shown) {
 			long rest = 0;
 			for (int i = shown; i < blocks.size(); i++) {
 				rest += blocks.get(i).count;
 			}
-			p.blockMore = new Row(ItemStack.EMPTY, "외 " + (blocks.size() - shown) + "종", rest, 0, 0, DIM, true);
+			p.blockMore = new Row(ItemStack.EMPTY, "외 " + (blocks.size() - shown) + "종", rest, true, true);
 		}
 
-		List<Tracker.ItemTally> minerals = new ArrayList<>();
 		List<Tracker.ItemTally> others = new ArrayList<>();
 		for (Tracker.ItemTally t : tracker.sortedItems()) {
-			(t.other ? others : minerals).add(t);
-		}
-		int shownItems = Math.min(minerals.size(), cfg.maxItemRows);
-		for (int i = 0; i < shownItems; i++) {
-			Tracker.ItemTally t = minerals.get(i);
-			p.itemRows.add(new Row(t.icon, t.name, t.total(), t.storage, t.inventory, TEXT, false));
-		}
-		if (minerals.size() > shownItems) {
-			long a = 0, b = 0, c = 0;
-			for (int i = shownItems; i < minerals.size(); i++) {
-				Tracker.ItemTally t = minerals.get(i);
-				a += t.total();
-				b += t.storage;
-				c += t.inventory;
+			if (t.other) {
+				others.add(t);
+			} else {
+				p.minerals.add(new Row(t.icon, t.name, t.count, false, false));
+				p.totalMinerals += t.count;
 			}
-			p.itemMore = new Row(ItemStack.EMPTY, "외 " + (minerals.size() - shownItems) + "종", a, b, c, DIM, true);
 		}
 		if (!others.isEmpty()) {
-			long a = 0, b = 0, c = 0;
+			long rest = 0;
 			for (Tracker.ItemTally t : others) {
-				a += t.total();
-				b += t.storage;
-				c += t.inventory;
+				rest += t.count;
 			}
-			p.otherRow = new Row(others.get(0).icon, "기타 " + others.size() + "종", a, b, c, DIM, false);
+			p.otherRow = new Row(others.get(0).icon, "기타 " + others.size() + "종", rest, true, false);
 		}
 		return p;
 	}
 
 	/** Example numbers for the editor when nothing has been recorded yet. */
-	static Panel samplePanel(Tracker tracker) {
+	static Panel samplePanel() {
 		Panel p = new Panel();
-		p.time = formatTime(tracker.activeTicks());
-		p.running = tracker.isRunning();
+		p.time = "12:34";
+		p.seconds = 12 * 60 + 34;
 		Block[] blocks = {Blocks.DEEPSLATE, Blocks.STONE, Blocks.TUFF, Blocks.DEEPSLATE_IRON_ORE, Blocks.DEEPSLATE_REDSTONE_ORE};
 		long[] counts = {1046, 512, 88, 34, 21};
 		for (int i = 0; i < blocks.length; i++) {
-			p.blockRows.add(new Row(new ItemStack(blocks[i]), blocks[i].getName().getString(), counts[i], 0, 0, TEXT, false));
+			p.blockRows.add(new Row(new ItemStack(blocks[i]), blocks[i].getName().getString(), counts[i], false, false));
 		}
-		p.blockMore = new Row(ItemStack.EMPTY, "외 5종", 39, 0, 0, DIM, true);
+		p.blockMore = new Row(ItemStack.EMPTY, "외 5종", 39, true, true);
 		p.totalBlocks = 1740;
 		ItemStack[] items = {new ItemStack(Items.REDSTONE), new ItemStack(Items.RAW_IRON), new ItemStack(Items.LAPIS_LAZULI),
 				new ItemStack(Items.RAW_COPPER), new ItemStack(Items.COAL), new ItemStack(Items.DIAMOND)};
-		long[][] split = {{96, 16}, {47, 0}, {38, 0}, {21, 5}, {13, 0}, {5, 0}};
+		long[] itemCounts = {112, 47, 38, 26, 13, 5};
 		for (int i = 0; i < items.length; i++) {
-			long st = split[i][0], inv = split[i][1];
-			p.itemRows.add(new Row(items[i], items[i].getHoverName().getString(), st + inv, st, inv, TEXT, false));
+			p.minerals.add(new Row(items[i], items[i].getHoverName().getString(), itemCounts[i], false, false));
+			p.totalMinerals += itemCounts[i];
 		}
-		p.otherRow = new Row(new ItemStack(Items.COBBLED_DEEPSLATE), "기타 4종", 1208, 0, 1208, DIM, false);
+		p.otherRow = new Row(new ItemStack(Items.COBBLED_DEEPSLATE), "기타 4종", 1208, true, false);
 		return p;
 	}
 
@@ -178,56 +160,23 @@ public final class HudRenderer {
 		ItemStack diamond = new ItemStack(Items.DIAMOND);
 		ItemStack iron = new ItemStack(Items.RAW_IRON);
 		ItemStack redstone = new ItemStack(Items.REDSTONE);
-		list.add(new ToastManager.Toast("a", diamond, diamond.getHoverName().getString(), true, 2, -1000));
-		list.add(new ToastManager.Toast("b", iron, iron.getHoverName().getString(), true, 8, -1000));
-		list.add(new ToastManager.Toast("c", redstone, redstone.getHoverName().getString(), false, 5, -1000));
+		list.add(new ToastManager.Toast("a", diamond, diamond.getHoverName().getString(), 2, -1000));
+		list.add(new ToastManager.Toast("b", iron, iron.getHoverName().getString(), 8, -1000));
+		list.add(new ToastManager.Toast("c", redstone, redstone.getHoverName().getString(), 5, -1000));
 		return list;
 	}
 
-	// ------------------------------------------------------------------ board
-
-	private static Layout layout(Font font, Panel p) {
-		int nameW = font.width("광질 측정");
-		int countW = font.width("총 " + fmt(p.totalBlocks));
-		int allW = font.width("합계");
-		int storeW = font.width("저장소");
-		int invW = font.width("인벤");
-		List<Row> blockLines = new ArrayList<>(p.blockRows);
-		if (p.blockMore != null) {
-			blockLines.add(p.blockMore);
-		}
-		for (Row r : blockLines) {
-			nameW = Math.max(nameW, Math.min(NAME_MAX, font.width(r.name())));
-			countW = Math.max(countW, font.width(fmt(r.a())));
-		}
-		List<Row> itemLines = itemLines(p);
-		for (Row r : itemLines) {
-			nameW = Math.max(nameW, Math.min(NAME_MAX, font.width(r.name())));
-			allW = Math.max(allW, font.width(fmt(r.a())));
-			storeW = Math.max(storeW, font.width(fmt(r.b())));
-			invW = Math.max(invW, font.width(fmt(r.c())));
-		}
-		int status = 8 + font.width("일시정지") + 4 + font.width(p.time);
-		int width = MIN_WIDTH;
-		width = Math.max(width, 18 + nameW + 8 + countW + 6);
-		width = Math.max(width, 18 + nameW + 8 + allW + 8 + storeW + 8 + invW + 6);
-		width = Math.max(width, 18 + font.width("광질 측정") + 12 + status + 6);
-
-		Layout l = new Layout();
-		l.width = width;
-		l.colInv = width - 6;
-		l.colStore = l.colInv - invW - 8;
-		l.colAll = l.colStore - storeW - 8;
-		int blockCount = Math.max(1, blockLines.size());
-		int itemCount = Math.max(1, itemLines.size());
-		l.height = 19 + PITCH * (1 + blockCount) + 5 + PITCH * (1 + itemCount) + 5;
-		return l;
-	}
-
-	private static List<Row> itemLines(Panel p) {
-		List<Row> lines = new ArrayList<>(p.itemRows);
-		if (p.itemMore != null) {
-			lines.add(p.itemMore);
+	/** Minerals for the list layouts: the first {@code max}, "외 N종", then "기타". */
+	static List<Row> mineralLines(Panel p, int max) {
+		List<Row> lines = new ArrayList<>();
+		int shown = Math.min(p.minerals.size(), max);
+		lines.addAll(p.minerals.subList(0, shown));
+		if (p.minerals.size() > shown) {
+			long rest = 0;
+			for (int i = shown; i < p.minerals.size(); i++) {
+				rest += p.minerals.get(i).count();
+			}
+			lines.add(new Row(ItemStack.EMPTY, "외 " + (p.minerals.size() - shown) + "종", rest, true, true));
 		}
 		if (p.otherRow != null) {
 			lines.add(p.otherRow);
@@ -235,94 +184,299 @@ public final class HudRenderer {
 		return lines;
 	}
 
-	/** Draws the board and returns where it ended up on screen: {x, y, width, height} in GUI pixels. */
-	static float[] drawPanel(GuiGraphics g, Font font, Panel p, float px, float py, float scale) {
-		Layout l = layout(font, p);
-		float x = clamp(px, 0, Math.max(0, g.guiWidth() - l.width * scale));
-		float y = clamp(py, 0, Math.max(0, g.guiHeight() - l.height * scale));
-		int w = l.width;
+	/** Minerals for the slot layout: as many as fit, the rest folded into one slot, "기타" last. */
+	static List<Row> slotRows(Panel p, int capacity) {
+		List<Row> slots = new ArrayList<>();
+		int room = capacity - (p.otherRow != null ? 1 : 0);
+		if (p.minerals.size() <= room) {
+			slots.addAll(p.minerals);
+		} else {
+			int shown = Math.max(0, room - 1);
+			slots.addAll(p.minerals.subList(0, shown));
+			long rest = 0;
+			for (int i = shown; i < p.minerals.size(); i++) {
+				rest += p.minerals.get(i).count();
+			}
+			slots.add(new Row(ItemStack.EMPTY, "외", rest, true, true));
+		}
+		if (p.otherRow != null) {
+			slots.add(p.otherRow);
+		}
+		return slots;
+	}
 
+	// ------------------------------------------------------------------ layouts
+
+	/** 자세히: mined blocks by type, then minerals. */
+	static float[] drawDetail(GuiGraphics g, Font font, Panel p, ModConfig cfg, Theme t) {
+		List<Row> blockLines = new ArrayList<>(p.blockRows);
+		if (p.blockMore != null) {
+			blockLines.add(p.blockMore);
+		}
+		List<Row> itemLines = mineralLines(p, cfg.maxItemRows);
+		int nameW = 0;
+		int countW = Math.max(font.width("총 " + fmt(p.totalBlocks)), font.width("획득"));
+		for (List<Row> lines : List.of(blockLines, itemLines)) {
+			for (Row r : lines) {
+				nameW = Math.max(nameW, Math.min(NAME_MAX, font.width(r.name())));
+				countW = Math.max(countW, font.width(fmt(r.count())));
+			}
+		}
+		int w = Math.max(MIN_WIDTH, Math.max(18 + nameW + 8 + countW + 6, headerWidth(font, p)));
+		int h = 19 + PITCH * (1 + Math.max(1, blockLines.size())) + 5 + PITCH * (1 + Math.max(1, itemLines.size())) + 5;
+		int right = w - 6;
+
+		float[] rect = begin(g, cfg.panelX, cfg.panelY, cfg.panelScale, w, h);
+		t.frame(g, 0, 0, w, h, false);
+		header(g, font, p, t, w);
+		int y = 19;
+		t.text(g, font, "캔 블록", 6, y + 2, t.label);
+		t.textRight(g, font, "총 " + fmt(p.totalBlocks), right, y + 2, t.text);
+		y += PITCH;
+		if (blockLines.isEmpty()) {
+			t.text(g, font, "아직 캔 블록이 없어요", 18, y + 2, t.dim);
+			y += PITCH;
+		}
+		for (Row r : blockLines) {
+			listRow(g, font, t, r, NAME_MAX, right, 0, null, y);
+			y += PITCH;
+		}
+		g.fill(5, y + 1, w - 5, y + 2, t.sep);
+		y += 5;
+		t.text(g, font, "먹은 광물", 6, y + 2, t.label);
+		t.textRight(g, font, "획득", right, y + 2, t.dim);
+		y += PITCH;
+		if (itemLines.isEmpty()) {
+			t.text(g, font, "아직 먹은 광물이 없어요", 18, y + 2, t.dim);
+		}
+		for (Row r : itemLines) {
+			listRow(g, font, t, r, NAME_MAX, right, 0, null, y);
+			y += PITCH;
+		}
+		g.pose().popPose();
+		return rect;
+	}
+
+	/** 슬림: mined blocks in one line, minerals with a per-hour column. */
+	static float[] drawSlim(GuiGraphics g, Font font, Panel p, ModConfig cfg, Theme t) {
+		List<Row> lines = mineralLines(p, cfg.maxItemRows);
+		boolean rates = p.seconds >= RATE_MIN_SECONDS;
+		String blockRate = "분당 " + (rates ? fmt(perMinute(p.totalBlocks, p.seconds)) : "-");
+		List<String> lineRates = new ArrayList<>();
+		int countW = Math.max(font.width("획득"), font.width(fmt(p.totalBlocks)));
+		int rateW = Math.max(font.width("시간당"), font.width(blockRate));
+		int nameW = 0;
+		for (Row r : lines) {
+			String rate = rates ? fmt(perHour(r.count(), p.seconds)) : "-";
+			lineRates.add(rate);
+			countW = Math.max(countW, font.width(fmt(r.count())));
+			rateW = Math.max(rateW, font.width(rate));
+			nameW = Math.max(nameW, Math.min(NAME_MAX, font.width(r.name())));
+		}
+		int w = Math.max(MIN_WIDTH, Math.max(18 + nameW + 8 + countW + 8 + rateW + 6, headerWidth(font, p)));
+		int h = 19 + PITCH + 5 + PITCH + PITCH * Math.max(1, lines.size()) + 5;
+		int rateR = w - 6;
+		int countR = rateR - rateW - 8;
+		int nameMax = countR - countW - 8 - 18;
+
+		float[] rect = begin(g, cfg.panelX, cfg.panelY, cfg.panelScale, w, h);
+		t.frame(g, 0, 0, w, h, false);
+		header(g, font, p, t, w);
+		int y = 19;
+		t.text(g, font, "캔 블록", 6, y + 2, t.label);
+		t.textRight(g, font, fmt(p.totalBlocks), countR, y + 2, t.text);
+		t.textRight(g, font, blockRate, rateR, y + 2, t.dim);
+		y += PITCH;
+		g.fill(5, y + 1, w - 5, y + 2, t.sep);
+		y += 5;
+		t.text(g, font, "먹은 광물", 6, y + 2, t.label);
+		t.textRight(g, font, "획득", countR, y + 2, t.dim);
+		t.textRight(g, font, "시간당", rateR, y + 2, t.dim);
+		y += PITCH;
+		if (lines.isEmpty()) {
+			t.text(g, font, "아직 먹은 광물이 없어요", 18, y + 2, t.dim);
+		}
+		for (int i = 0; i < lines.size(); i++) {
+			listRow(g, font, t, lines.get(i), nameMax, countR, rateR, lineRates.get(i), y);
+			y += PITCH;
+		}
+		g.pose().popPose();
+		return rect;
+	}
+
+	/** 아이콘: totals on two lines, minerals as inventory-style slots. */
+	static float[] drawIcons(GuiGraphics g, Font font, Panel p, ModConfig cfg, Theme t) {
+		boolean rates = p.seconds >= RATE_MIN_SECONDS;
+		String blockRate = "분당 " + (rates ? fmt(perMinute(p.totalBlocks, p.seconds)) : "-");
+		String itemRate = "시간당 " + (rates ? fmt(perHour(p.totalMinerals, p.seconds)) : "-");
+		int line1 = 6 + font.width("캔 블록") + 4 + font.width(fmt(p.totalBlocks)) + 10 + font.width(blockRate) + 6;
+		int line2 = 6 + font.width("먹은 광물") + 4 + font.width(fmt(p.totalMinerals)) + 10 + font.width(itemRate) + 6;
+		int w = Math.max(MIN_WIDTH, Math.max(headerWidth(font, p), Math.max(line1, line2)));
+		int perRow = Math.max(1, (w - 12 + SLOT_GAP) / (SLOT + SLOT_GAP));
+		List<Row> slots = slotRows(p, perRow * SLOT_ROWS);
+		int rows = Math.max(1, (slots.size() + perRow - 1) / perRow);
+		int gridTop = 19 + PITCH + PITCH + 1;
+		int h = gridTop + rows * (SLOT + SLOT_GAP) - SLOT_GAP + 6;
+
+		float[] rect = begin(g, cfg.panelX, cfg.panelY, cfg.panelScale, w, h);
+		t.frame(g, 0, 0, w, h, false);
+		header(g, font, p, t, w);
+		int y = 19;
+		t.text(g, font, "캔 블록", 6, y + 2, t.label);
+		t.text(g, font, fmt(p.totalBlocks), 6 + font.width("캔 블록") + 4, y + 2, t.text);
+		t.textRight(g, font, blockRate, w - 6, y + 2, t.dim);
+		y += PITCH;
+		t.text(g, font, "먹은 광물", 6, y + 2, t.label);
+		t.text(g, font, fmt(p.totalMinerals), 6 + font.width("먹은 광물") + 4, y + 2, t.text);
+		t.textRight(g, font, itemRate, w - 6, y + 2, t.dim);
+		if (slots.isEmpty()) {
+			t.text(g, font, "아직 먹은 광물이 없어요", 6, gridTop + 7, t.dim);
+		}
+		PoseStack pose = g.pose();
+		for (int i = 0; i < slots.size(); i++) {
+			Row r = slots.get(i);
+			int sx = 6 + (i % perRow) * (SLOT + SLOT_GAP);
+			int sy = gridTop + (i / perRow) * (SLOT + SLOT_GAP);
+			t.slot(g, sx, sy, SLOT);
+			if (r.dots()) {
+				for (int d = 0; d < 3; d++) {
+					g.fill(sx + 5 + d * 5, sy + 8, sx + 7 + d * 5, sy + 10, t.dim);
+				}
+			} else if (!r.icon().isEmpty()) {
+				g.renderItem(r.icon(), sx + 3, sy + 3);
+			}
+			// above the item, like the game's own stack counts
+			pose.pushPose();
+			pose.translate(0, 0, 200);
+			if (r.dim() && !r.dots()) {
+				g.fill(sx + 1, sy + 1, sx + SLOT - 1, sy + SLOT - 1, 0x70000000);
+			}
+			String count = slotCount(r.count());
+			g.drawString(font, count, sx + SLOT - 2 - font.width(count), sy + SLOT - 10, r.dim() ? 0xFFAAAAAA : 0xFFFFFFFF, true);
+			pose.popPose();
+		}
+		pose.popPose();
+		return rect;
+	}
+
+	/** 한 줄: everything on one line, centred at the top of the screen by default. */
+	static float[] drawBar(GuiGraphics g, Font font, Panel p, ModConfig cfg, Theme t) {
+		int w = bar(null, font, p, t);
+		float scale = cfg.barScale;
+		float center = cfg.barCenterX < 0 ? g.guiWidth() / 2f : cfg.barCenterX;
+		float[] rect = begin(g, center - w * scale / 2f, cfg.barY, scale, w, BAR_HEIGHT);
+		t.frame(g, 0, 0, w, BAR_HEIGHT, false);
+		bar(g, font, p, t);
+		g.pose().popPose();
+		return rect;
+	}
+
+	/** Lays out the one-line board and draws it when {@code g} is not null. Returns its width. */
+	private static int bar(GuiGraphics g, Font font, Panel p, Theme t) {
+		int x = 5;
+		if (g != null) {
+			icon(g, headerIcon(), x, 3);
+		}
+		x += 10;
+		x = barText(g, font, t, p.time, x, t.sub) + 4;
+		if (g != null) {
+			g.fill(x, 5, x + 4, 9, p.resting ? t.yellow : t.green);
+		}
+		x += 8;
+		x = barSep(g, t, x);
+		x = barText(g, font, t, "블록", x, t.label) + 3;
+		x = barText(g, font, t, fmt(p.totalBlocks), x, t.text) + 2;
+		x = barSep(g, t, x);
+		int shown = Math.min(p.minerals.size(), BAR_MAX_ITEMS);
+		for (int i = 0; i < shown; i++) {
+			Row r = p.minerals.get(i);
+			if (g != null) {
+				icon(g, r.icon(), x, 3);
+			}
+			x += 10;
+			x = barText(g, font, t, fmt(r.count()), x, t.text) + 6;
+		}
+		if (p.minerals.size() > shown) {
+			x = barText(g, font, t, "+" + (p.minerals.size() - shown) + "종", x, t.dim) + 6;
+		}
+		if (p.minerals.isEmpty()) {
+			x = barText(g, font, t, "아직 없음", x, t.dim) + 6;
+		}
+		if (p.otherRow != null) {
+			x = barSep(g, t, x - 4);
+			x = barText(g, font, t, "기타 " + fmt(p.otherRow.count()), x, t.dim) + 6;
+		}
+		return x - 1;
+	}
+
+	private static int barText(GuiGraphics g, Font font, Theme t, String s, int x, int color) {
+		if (g != null) {
+			t.text(g, font, s, x, 3, color);
+		}
+		return x + font.width(s);
+	}
+
+	private static int barSep(GuiGraphics g, Theme t, int x) {
+		if (g != null) {
+			g.fill(x + 2, 3, x + 3, 11, (t.dim & 0x00FFFFFF) | 0x99000000);
+		}
+		return x + 7;
+	}
+
+	// ------------------------------------------------------------------ pieces
+
+	/** Pushes the pose for a w x h panel at (px, py), kept on screen. Returns {x, y, width, height}. */
+	private static float[] begin(GuiGraphics g, float px, float py, float scale, int w, int h) {
+		float x = clamp(px, 0, Math.max(0, g.guiWidth() - w * scale));
+		float y = clamp(py, 0, Math.max(0, g.guiHeight() - h * scale));
 		PoseStack pose = g.pose();
 		pose.pushPose();
 		pose.translate(x, y, 0);
 		pose.scale(scale, scale, 1f);
-
-		frame(g, 0, 0, w, l.height);
-
-		// header: icon, title, state and measured time
-		icon(g, headerIcon(), 6, 4);
-		g.drawString(font, "광질 측정", 18, 4, HEAD, true);
-		int right = w - 6;
-		g.drawString(font, p.time, right - font.width(p.time), 4, SUB, true);
-		right -= font.width(p.time) + 4;
-		String state = p.running ? "측정 중" : "일시정지";
-		int stateColor = p.running ? GREEN : YELLOW;
-		g.drawString(font, state, right - font.width(state), 4, stateColor, true);
-		right -= font.width(state) + 4;
-		g.fill(right - 4, 6, right, 10, stateColor);
-		g.fill(3, 15, w - 3, 16, RULE);
-
-		int rowY = 19;
-
-		// mined blocks
-		g.drawString(font, "캔 블록", 6, rowY + 2, LABEL, true);
-		textRight(g, font, "총 " + fmt(p.totalBlocks), l.colInv, rowY + 2, TEXT);
-		rowY += PITCH;
-		if (p.blockRows.isEmpty()) {
-			g.drawString(font, "아직 캔 블록이 없어요", 18, rowY + 2, DIM, true);
-			rowY += PITCH;
-		}
-		for (Row r : p.blockRows) {
-			drawNameCell(g, font, r, rowY);
-			textRight(g, font, fmt(r.a()), l.colInv, rowY + 2, r.color());
-			rowY += PITCH;
-		}
-		if (p.blockMore != null) {
-			drawNameCell(g, font, p.blockMore, rowY);
-			textRight(g, font, fmt(p.blockMore.a()), l.colInv, rowY + 2, DIM);
-			rowY += PITCH;
-		}
-
-		g.fill(5, rowY + 1, w - 5, rowY + 2, SEP);
-		rowY += 5;
-
-		// picked-up items, split by where they went
-		g.drawString(font, "먹은 광물", 6, rowY + 2, LABEL, true);
-		textRight(g, font, "합계", l.colAll, rowY + 2, DIM);
-		textRight(g, font, "저장소", l.colStore, rowY + 2, DIM);
-		textRight(g, font, "인벤", l.colInv, rowY + 2, DIM);
-		rowY += PITCH;
-		List<Row> lines = itemLines(p);
-		if (lines.isEmpty()) {
-			g.drawString(font, "아직 먹은 광물이 없어요", 18, rowY + 2, DIM, true);
-		}
-		for (Row r : lines) {
-			boolean main = r.color() == TEXT;
-			drawNameCell(g, font, r, rowY);
-			textRight(g, font, fmt(r.a()), l.colAll, rowY + 2, main ? TEXT : DIM);
-			textRight(g, font, fmt(r.b()), l.colStore, rowY + 2, r.b() == 0 ? ZERO : (main ? SUB : DIM));
-			textRight(g, font, fmt(r.c()), l.colInv, rowY + 2, r.c() == 0 ? ZERO : (main ? SUB : DIM));
-			rowY += PITCH;
-		}
-
-		pose.popPose();
-		return new float[]{x, y, l.width * scale, l.height * scale};
+		return new float[]{x, y, w * scale, h * scale};
 	}
 
-	private static void drawNameCell(GuiGraphics g, Font font, Row r, int rowY) {
+	private static int headerWidth(Font font, Panel p) {
+		int status = 8 + Math.max(font.width("측정 중"), font.width("쉬는 중")) + 4 + font.width(p.time);
+		return 18 + font.width("광질 측정") + 12 + status + 6;
+	}
+
+	/** Icon, title, state and measured time, then the coloured rule. */
+	private static void header(GuiGraphics g, Font font, Panel p, Theme t, int w) {
+		icon(g, headerIcon(), 6, 4);
+		t.text(g, font, "광질 측정", 18, 4, t.head);
+		int hx = w - 6;
+		t.textRight(g, font, p.time, hx, 4, t.sub);
+		hx -= font.width(p.time) + 4;
+		String status = p.resting ? "쉬는 중" : "측정 중";
+		int color = p.resting ? t.yellow : t.green;
+		t.textRight(g, font, status, hx, 4, color);
+		hx -= font.width(status) + 4;
+		g.fill(hx - 4, 6, hx, 10, color);
+		g.fill(t.inset(), 15, w - t.inset(), 16, t.rule);
+	}
+
+	/** A list line: icon (or dots), name, count, and optionally a rate in its own column. */
+	private static void listRow(GuiGraphics g, Font font, Theme t, Row r, int nameMax, int countR, int rateR, String rate, int y) {
 		if (r.dots()) {
-			g.fill(6, rowY + 7, 7, rowY + 8, DIM);
-			g.fill(9, rowY + 7, 10, rowY + 8, DIM);
-			g.fill(12, rowY + 7, 13, rowY + 8, DIM);
+			g.fill(6, y + 7, 7, y + 8, t.dim);
+			g.fill(9, y + 7, 10, y + 8, t.dim);
+			g.fill(12, y + 7, 13, y + 8, t.dim);
 		} else {
-			icon(g, r.icon(), 6, rowY + 2);
+			icon(g, r.icon(), 6, y + 2);
 		}
-		g.drawString(font, ellipsize(font, r.name(), NAME_MAX), 18, rowY + 2, r.color(), true);
+		int color = r.dim() ? t.dim : t.text;
+		t.text(g, font, ellipsize(font, r.name(), nameMax), 18, y + 2, color);
+		t.textRight(g, font, fmt(r.count()), countR, y + 2, color);
+		if (rate != null) {
+			t.textRight(g, font, rate, rateR, y + 2, r.dim() ? t.dim : t.sub);
+		}
 	}
 
 	// ------------------------------------------------------------------ toasts
 
-	static void drawToasts(GuiGraphics g, Font font, List<ToastManager.Toast> toasts, long tick, float partialTick, ModConfig cfg) {
+	static void drawToasts(GuiGraphics g, Font font, List<ToastManager.Toast> toasts, long tick, float partialTick,
+			ModConfig cfg, Theme theme) {
 		if (toasts.isEmpty()) {
 			return;
 		}
@@ -341,7 +495,7 @@ public final class HudRenderer {
 			if (shown > 0f) {
 				int w = toastWidth(font, t);
 				float eased = 1f - (1f - shown) * (1f - shown);
-				drawToast(g, font, t, right - w + (1f - eased) * (w + 10), y);
+				drawToast(g, font, theme, t, right - w + (1f - eased) * (w + 10), y);
 			}
 			y += TOAST_HEIGHT + TOAST_GAP;
 		}
@@ -349,7 +503,7 @@ public final class HudRenderer {
 	}
 
 	/** Toasts at rest (for the editor). Returns {x, y, width, height} in GUI pixels. */
-	static float[] drawToastsStatic(GuiGraphics g, Font font, List<ToastManager.Toast> toasts, ModConfig cfg) {
+	static float[] drawToastsStatic(GuiGraphics g, Font font, List<ToastManager.Toast> toasts, ModConfig cfg, Theme theme) {
 		float scale = cfg.toastScale;
 		int maxW = 0;
 		for (ToastManager.Toast t : toasts) {
@@ -365,7 +519,7 @@ public final class HudRenderer {
 		float right = rightGui / scale;
 		float y = topGui / scale;
 		for (ToastManager.Toast t : toasts) {
-			drawToast(g, font, t, right - toastWidth(font, t), y);
+			drawToast(g, font, theme, t, right - toastWidth(font, t), y);
 			y += TOAST_HEIGHT + TOAST_GAP;
 		}
 		pose.popPose();
@@ -374,36 +528,24 @@ public final class HudRenderer {
 
 	private static int toastWidth(Font font, ToastManager.Toast t) {
 		String name = ellipsize(font, t.name, NAME_MAX);
-		return 16 + font.width(name) + 4 + font.width("+" + fmt(t.amount)) + 6 + font.width(t.storage ? "저장소" : "인벤") + 5;
+		return 16 + font.width(name) + 4 + font.width("+" + fmt(t.amount)) + 5;
 	}
 
-	private static void drawToast(GuiGraphics g, Font font, ToastManager.Toast t, float x, float y) {
+	private static void drawToast(GuiGraphics g, Font font, Theme theme, ToastManager.Toast t, float x, float y) {
 		String name = ellipsize(font, t.name, NAME_MAX);
 		String plus = "+" + fmt(t.amount);
-		String tag = t.storage ? "저장소" : "인벤";
 		int w = toastWidth(font, t);
 		PoseStack pose = g.pose();
 		pose.pushPose();
 		pose.translate(x, y, 0);
-		frame(g, 0, 0, w, TOAST_HEIGHT);
+		theme.frame(g, 0, 0, w, TOAST_HEIGHT, false);
 		icon(g, t.icon, 4, 3);
-		int tx = 16;
-		g.drawString(font, name, tx, 3, TEXT, true);
-		tx += font.width(name) + 4;
-		g.drawString(font, plus, tx, 3, PLUS, true);
-		tx += font.width(plus) + 6;
-		g.drawString(font, tag, tx, 3, t.storage ? SUB : TAG_INV, true);
+		theme.text(g, font, name, 16, 3, theme.text);
+		theme.text(g, font, plus, 16 + font.width(name) + 4, 3, theme.plus);
 		pose.popPose();
 	}
 
 	// ------------------------------------------------------------------ helpers
-
-	/** Same frame as the server's own panels: dark edge, border, solid background. */
-	static void frame(GuiGraphics g, int x, int y, int w, int h) {
-		g.fill(x, y, x + w, y + h, EDGE);
-		g.fill(x + 1, y + 1, x + w - 1, y + h - 1, BORDER);
-		g.fill(x + 2, y + 2, x + w - 2, y + h - 2, BG);
-	}
 
 	/** The game's own item icon, at half size (8x8 panel pixels). */
 	static void icon(GuiGraphics g, ItemStack stack, int x, int y) {
@@ -418,22 +560,37 @@ public final class HudRenderer {
 		pose.popPose();
 	}
 
-	private static ItemStack headerIcon() {
+	static ItemStack headerIcon() {
 		if (headerIcon == null) {
 			headerIcon = new ItemStack(Items.IRON_PICKAXE);
 		}
 		return headerIcon;
 	}
 
-	private static void textRight(GuiGraphics g, Font font, String text, int right, int y, int color) {
-		g.drawString(font, text, right - font.width(text), y, color, true);
-	}
-
 	static String ellipsize(Font font, String text, int maxWidth) {
 		if (font.width(text) <= maxWidth) {
 			return text;
 		}
-		return font.plainSubstrByWidth(text, maxWidth - font.width("…")) + "…";
+		return font.plainSubstrByWidth(text, Math.max(0, maxWidth - font.width("…"))) + "…";
+	}
+
+	static long perMinute(long count, long seconds) {
+		return seconds <= 0 ? 0 : Math.round(count * 60.0 / seconds);
+	}
+
+	static long perHour(long count, long seconds) {
+		return seconds <= 0 ? 0 : Math.round(count * 3600.0 / seconds);
+	}
+
+	/** Stack counts in a slot: 1,208 becomes 1.2k so it fits. */
+	static String slotCount(long n) {
+		if (n >= 10000) {
+			return (n / 1000) + "k";
+		}
+		if (n >= 1000) {
+			return String.format(Locale.ROOT, "%.1fk", (n / 100) / 10.0);
+		}
+		return Long.toString(n);
 	}
 
 	static String fmt(long n) {

@@ -1,19 +1,23 @@
 package com.miningtracker;
 
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.ItemTags;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.item.FallingBlockEntity;
 import net.minecraft.world.entity.item.ItemEntity;
-import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.FallingBlock;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
@@ -25,34 +29,60 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 /**
- * Counts mined blocks and picked-up items for the current game session.
+ * Counts mined blocks and picked-up items while a recording (광질 기록) is running.
  *
- * <p>Blocks: the block the player breaks is counted right away (and taken back if the server
- * puts it back), and solid blocks right next to it that disappear within a moment are counted
- * too, which covers skills that break 3x3 at once.
+ * <p>Automatic mode: a recording starts when the player breaks stone or ore with a pickaxe in the
+ * wild world (야생), and ends after a set time without mining. Manual mode: F7 starts and ends it.
  *
- * <p>Items: a pickup is counted when the server tells the client this player picked the item up.
- * If a server plugin removes the item without that message (for example when it goes straight
- * into a storage), an item that vanishes right next to the player is counted instead.
- * Whether it went to the inventory or the item storage is decided by checking how much the
- * inventory grew shortly after.
+ * <p>Blocks: the block the player breaks is counted right away (and taken back if the server puts it
+ * back); solid blocks right next to it that disappear within a moment are counted too, which covers
+ * skills that break 3x3 at once.
+ *
+ * <p>Items: a pickup is counted when the server tells the client this player picked the item up. If a
+ * server plugin removes the item without that message (for example when it goes straight into the item
+ * storage), an item that vanishes next to the player is counted instead, unless it merged into another
+ * item, was picked up by someone closer, burned, or had been lying in pickup range for a long time
+ * (then it was cleaned up, not picked up).
  */
 public final class Tracker {
 	public static final Tracker INSTANCE = new Tracker();
 
 	private static final int WATCH_TICKS = 30;
 	private static final int PRIMARY_CHECK_TICKS = 40;
-	private static final int RESOLVE_QUIET_TICKS = 8;
-	private static final int RESOLVE_MAX_TICKS = 20;
-	private static final int SNAPSHOT_SIZE = 16;
-	private static final int FALLBACK_MAX_REACH_TICKS = 60;
 	private static final int RESET_CONFIRM_TICKS = 60;
+
+	// ---- pickup detection when the server sends no pickup message ----
+	/** An item that was next to the player this recently still counts (the server is a little behind). */
+	private static final int NEAR_RECENT_TICKS = 10;
+	/** Items younger than this (just dropped) count from a bit further away, where positions can differ. */
+	private static final int FRESH_TICKS = 200;
+	/**
+	 * In pickup range this long without being picked up: the server would not take it (full inventory),
+	 * so when it vanishes it was cleaned up. Long enough to ride out server lag spikes.
+	 */
+	private static final int PICKUP_RANGE_LYING_TICKS = 600;
+	/** Next to the player this long (but not in pickup range): lying around, not being picked up. */
+	private static final int NEAR_LYING_TICKS = 300;
+	/** Came into pickup range this recently: a real pickup even if it lay nearby for a long time. */
+	private static final int JUST_REACHED_TICKS = 40;
+	/** Wait this long before deciding, so a merge shows up as another item growing. */
+	private static final int RESOLVE_DELAY_TICKS = 4;
+	private static final int MERGE_WINDOW_BEFORE = 2;
+	private static final double MERGE_DIST_SQR = 1.5 * 1.5;
+	/** A removal this soon after a pickup message belongs to that pickup. */
+	private static final int TAKEN_RECENT_TICKS = 20;
+	/** A pickup message this soon after the item vanished still counts (some servers send it late). */
+	private static final int LATE_TAKE_TICKS = 10;
+	private static final int GROWTH_SLOTS = 8;
+	/** Short breaks while mining (up to 10 seconds) still count as mining time. */
+	private static final int ACTIVE_GRACE_TICKS = 200;
+	private static final int SUMMARY_BLOCKS = 5;
+	private static final int SUMMARY_ITEMS = 8;
 
 	public static final class BlockTally {
 		public final Block block;
@@ -72,8 +102,7 @@ public final class Tracker {
 		public final String name;
 		public final ItemStack icon;
 		public final boolean other;
-		public long storage;
-		public long inventory;
+		public long count;
 
 		ItemTally(String key, ItemStack proto, boolean other) {
 			this.key = key;
@@ -81,10 +110,23 @@ public final class Tracker {
 			this.icon = proto.copyWithCount(1);
 			this.other = other;
 		}
+	}
 
-		public long total() {
-			return storage + inventory;
-		}
+	/** Counters for /광질 진단, to see which detection paths the server triggers. */
+	public static final class Stats {
+		public long packetPickups;
+		/** Pickup messages that came after the item had already vanished (part of packetPickups). */
+		public long latePacketPickups;
+		public long fallbackPickups;
+		public long mergeSkips;
+		public long cleanupSkips;
+		public long longReachSkips;
+		/** Vanished within 2.5 blocks but was neither next to the player nor freshly dropped. */
+		public long notNearSkips;
+		public long otherPlayerSkips;
+		public long lavaSkips;
+		public long neighborBlocks;
+		public long restoredBlocks;
 	}
 
 	private static final class PrimaryCheck {
@@ -112,70 +154,75 @@ public final class Tracker {
 		}
 	}
 
+	/** What we know about an item entity near the player (kept a few seconds after it vanishes). */
 	private static final class TrackedItem {
 		ItemStack proto = ItemStack.EMPTY;
 		int count;
 		Vec3 pos = Vec3.ZERO;
 		long lastSeen;
-		long reachSince = -1;
+		/** Last tick it was next to the player (near box). */
+		long lastNear = Long.MIN_VALUE / 2;
+		/** Continuously next to the player since this tick, or -1. */
+		long nearSince = -1;
+		/** Continuously in pickup range since this tick, or -1. */
+		long pickupRangeSince = -1;
+		long removedAt = -1;
+		/** Recent count increases (another item merged into this one): when and how much. */
+		final long[] growTick = new long[GROWTH_SLOTS];
+		final int[] growAmount = new int[GROWTH_SLOTS];
+		int growNext;
+
+		void observeCount(int newCount, long now) {
+			if (count > 0 && newCount > count) {
+				growTick[growNext] = now;
+				growAmount[growNext] = newCount - count;
+				growNext = (growNext + 1) % GROWTH_SLOTS;
+			}
+			count = newCount;
+		}
+
+		int grownBetween(long from, long to) {
+			int sum = 0;
+			for (int i = 0; i < GROWTH_SLOTS; i++) {
+				if (growAmount[i] > 0 && growTick[i] >= from && growTick[i] <= to) {
+					sum += growAmount[i];
+				}
+			}
+			return sum;
+		}
 	}
 
+	/** An item that vanished next to the player without a pickup message, waiting to be judged. */
 	private static final class Candidate {
+		final int entityId;
 		final ItemStack proto;
 		final int count;
 		final long tick;
-		final Map<Integer, Integer> nearby;
+		final Vec3 pos;
 
-		Candidate(ItemStack proto, int count, long tick, Map<Integer, Integer> nearby) {
+		Candidate(int entityId, ItemStack proto, int count, long tick, Vec3 pos) {
+			this.entityId = entityId;
 			this.proto = proto;
 			this.count = count;
 			this.tick = tick;
-			this.nearby = nearby;
+			this.pos = pos;
 		}
-	}
-
-	private static final class Pending {
-		final String key;
-		final ItemStack proto;
-		final long firstTick;
-		final int baseline;
-		long lastTick;
-		int amount;
-
-		Pending(String key, ItemStack proto, long firstTick, int baseline) {
-			this.key = key;
-			this.proto = proto;
-			this.firstTick = firstTick;
-			this.lastTick = firstTick;
-			this.baseline = baseline;
-		}
-	}
-
-	/** Counters for /광질 진단, to see which detection paths the server triggers. */
-	public static final class Stats {
-		public long packetPickups;
-		public long fallbackPickups;
-		public long mergeSkips;
-		public long cleanupSkips;
-		public long longReachSkips;
-		public long neighborBlocks;
-		public long restoredBlocks;
-		public long toStorage;
-		public long toInventory;
 	}
 
 	public final Stats stats = new Stats();
+	public final ToastManager toasts = new ToastManager();
 
-	// ---- session data shown on the HUD ----
-	private boolean running = true;
+	// ---- recording state ----
 	private long tick;
+	private boolean recording;
+	private boolean manualSession;
+	private long lastMineTick;
 	private long activeTicks;
 	private final Map<Block, BlockTally> blocks = new HashMap<>();
 	private final Map<String, ItemTally> items = new HashMap<>();
 	private List<BlockTally> sortedBlocks = new ArrayList<>();
 	private List<ItemTally> sortedItems = new ArrayList<>();
 	private boolean dirty;
-	public final ToastManager toasts = new ToastManager();
 
 	// ---- bookkeeping ----
 	private ClientLevel lastLevel;
@@ -187,23 +234,27 @@ public final class Tracker {
 	private final Set<Long> cleanupTicks = new HashSet<>();
 	private int discardsThisTick;
 	private int farDiscardsThisTick;
-	private final Map<String, Pending> pendings = new LinkedHashMap<>();
-	private final Map<String, Long> lastResolved = new HashMap<>();
-	private final List<Map<String, Integer>> snapshots = new ArrayList<>();
-	private final long[] snapshotTicks = new long[SNAPSHOT_SIZE];
 	private long resetArmedAt = Long.MIN_VALUE / 2;
+	private boolean openSettingsNextTick;
 	private boolean openEditorNextTick;
 
 	private Tracker() {
-		for (int i = 0; i < SNAPSHOT_SIZE; i++) {
-			snapshots.add(null);
-		}
 	}
 
 	// ------------------------------------------------------------------ getters
 
-	public boolean isRunning() {
-		return running;
+	public boolean isRecording() {
+		return recording;
+	}
+
+	/** Started with F7 or /광질 시작 (rather than automatically). */
+	public boolean isManualSession() {
+		return manualSession;
+	}
+
+	/** Automatic recording, but nothing mined for a little while (shown as "쉬는 중"). */
+	public boolean isResting() {
+		return recording && ModConfig.get().autoMode && tick - lastMineTick > ACTIVE_GRACE_TICKS;
 	}
 
 	public long tick() {
@@ -228,32 +279,94 @@ public final class Tracker {
 		return blocks.isEmpty() && items.isEmpty();
 	}
 
-	// ------------------------------------------------------------------ controls
+	// ------------------------------------------------------------------ places
 
-	public void setRunning(boolean running) {
-		this.running = running;
+	public static String dimensionId(ClientLevel level) {
+		return level.dimension().location().toString();
 	}
 
-	public void reset() {
-		blocks.clear();
-		items.clear();
-		pendings.clear();
-		lastResolved.clear();
-		candidates.clear();
+	/** World name plus its spawn point: tells apart servers that all call their world "overworld". */
+	public static String placeKey(ClientLevel level) {
+		BlockPos spawn = level.getLevelData().getSpawnPos(); // null until the server has sent it
+		String where = spawn == null ? "?" : spawn.getX() + "," + spawn.getY() + "," + spawn.getZ();
+		return dimensionId(level) + "@" + where;
+	}
+
+	public static boolean isWildWorld(ClientLevel level) {
+		return ModConfig.get().isWildDimension(dimensionId(level));
+	}
+
+	/** Where automatic recording may start: the wild world, unless switched off for this place. */
+	public static boolean isAutoPlace(ClientLevel level) {
+		return isWildWorld(level) && !ModConfig.get().isExcluded(placeKey(level));
+	}
+
+	private boolean countsHere(ClientLevel level) {
+		return recording && (manualSession || !ModConfig.get().autoMode || isAutoPlace(level));
+	}
+
+	// ------------------------------------------------------------------ recording control
+
+	public void startRecording(boolean manual) {
+		if (recording) {
+			return;
+		}
+		if (!ModConfig.get().continueOnRestart) {
+			clearTallies();
+		}
+		recording = true;
+		manualSession = manual;
+		lastMineTick = tick;
 		primaryChecks.clear();
 		watches.clear();
+		candidates.clear();
+	}
+
+	public void stopRecording(Minecraft mc, boolean summary) {
+		if (!recording) {
+			return;
+		}
+		recording = false;
+		primaryChecks.clear();
+		watches.clear();
+		candidates.clear();
+		if (summary && ModConfig.get().chatSummary) {
+			postSummary(mc);
+		}
+	}
+
+	/**
+	 * Automatic recording was just switched off for the place the player is in (e.g. 세레니티): an
+	 * automatic recording that is running ends now instead of a minute later.
+	 */
+	public void onPlaceSwitchedOff(Minecraft mc) {
+		if (recording && !manualSession && ModConfig.get().autoMode) {
+			stopRecording(mc, true);
+		}
+	}
+
+	/** Clears the counts but keeps recording if a recording is running. */
+	public void clearTallies() {
+		blocks.clear();
+		items.clear();
 		toasts.clear();
 		activeTicks = 0;
 		stats.packetPickups = 0;
+		stats.latePacketPickups = 0;
 		stats.fallbackPickups = 0;
 		stats.mergeSkips = 0;
 		stats.cleanupSkips = 0;
 		stats.longReachSkips = 0;
+		stats.notNearSkips = 0;
+		stats.otherPlayerSkips = 0;
+		stats.lavaSkips = 0;
 		stats.neighborBlocks = 0;
 		stats.restoredBlocks = 0;
-		stats.toStorage = 0;
-		stats.toInventory = 0;
 		dirty = true;
+	}
+
+	public void requestSettings() {
+		openSettingsNextTick = true;
 	}
 
 	public void requestEditor() {
@@ -262,6 +375,10 @@ public final class Tracker {
 
 	static void notify(Minecraft mc, String message) {
 		mc.gui.setOverlayMessage(Component.literal(message), false);
+	}
+
+	static String formatSeconds(int seconds) {
+		return seconds % 60 == 0 ? (seconds / 60) + "분" : seconds + "초";
 	}
 
 	// ------------------------------------------------------------------ tick
@@ -276,10 +393,27 @@ public final class Tracker {
 		tick++;
 
 		handleKeys(mc);
+		if (openSettingsNextTick) {
+			openSettingsNextTick = false;
+			if (mc.screen == null) {
+				mc.setScreen(new SettingsScreen(null));
+			}
+		}
 		if (openEditorNextTick) {
 			openEditorNextTick = false;
 			if (mc.screen == null) {
-				mc.setScreen(new EditHudScreen());
+				mc.setScreen(new EditHudScreen(null));
+			}
+		}
+
+		ModConfig cfg = ModConfig.get();
+		if (recording) {
+			if (cfg.autoMode && tick - lastMineTick > cfg.endAfterSeconds * 20L) {
+				stopRecording(mc, true);
+				notify(mc, "광질 측정: " + formatSeconds(cfg.endAfterSeconds) + " 동안 안 캐서 기록을 끝냈어요");
+			} else if (mc.level != null && !mc.isPaused()
+					&& (!cfg.autoMode || tick - lastMineTick <= ACTIVE_GRACE_TICKS)) {
+				activeTicks++;
 			}
 		}
 
@@ -287,32 +421,29 @@ public final class Tracker {
 		LocalPlayer player = mc.player;
 		if (level == null || player == null) {
 			if (lastLevel != null) {
+				resolveCandidates(true);
 				clearWorldState();
 				lastLevel = null;
 			}
 			return;
 		}
 		if (level != lastLevel) {
+			resolveCandidates(true); // picked up right before a teleport: still count it
 			clearWorldState();
 			lastLevel = level;
 		}
-		if (running && !mc.isPaused()) {
-			activeTicks++;
-		}
 
-		snapshotInventory(player);
 		checkPrimaries(level);
 		checkWatches(level, player);
 		trackItems(level, player);
-		resolveCandidates(level);
-		resolvePendings(player, false);
+		resolveCandidates(false);
 		toasts.tick(tick);
 		takenByPacket.values().removeIf(t -> tick - t > 100);
 		cleanupTicks.removeIf(t -> tick - t > 20);
 	}
 
 	public void onDisconnect() {
-		resolvePendings(null, true);
+		resolveCandidates(true);
 		clearWorldState();
 		lastLevel = null;
 	}
@@ -323,9 +454,6 @@ public final class Tracker {
 		tracked.clear();
 		takenByPacket.clear();
 		candidates.clear();
-		for (int i = 0; i < SNAPSHOT_SIZE; i++) {
-			snapshots.set(i, null);
-		}
 	}
 
 	private void handleKeys(Minecraft mc) {
@@ -336,12 +464,20 @@ public final class Tracker {
 			notify(mc, cfg.hudVisible ? "광질 측정: 집계판을 켰어요" : "광질 측정: 집계판을 숨겼어요");
 		}
 		while (Keys.pause.consumeClick()) {
-			running = !running;
-			notify(mc, running ? "광질 측정: 측정을 다시 시작했어요" : "광질 측정: 일시정지했어요");
+			if (recording) {
+				stopRecording(mc, true);
+				notify(mc, "광질 측정: 기록을 끝냈어요");
+			} else {
+				startRecording(true);
+				ModConfig cfg = ModConfig.get();
+				notify(mc, cfg.autoMode
+						? "광질 측정: 기록을 시작했어요 (" + formatSeconds(cfg.endAfterSeconds) + " 동안 안 캐면 끝나요)"
+						: "광질 측정: 기록을 시작했어요 (F7을 다시 누르면 끝나요)");
+			}
 		}
 		while (Keys.reset.consumeClick()) {
 			if (tick - resetArmedAt <= RESET_CONFIRM_TICKS) {
-				reset();
+				clearTallies();
 				resetArmedAt = Long.MIN_VALUE / 2;
 				notify(mc, "광질 측정: 기록을 초기화했어요");
 			} else {
@@ -351,7 +487,7 @@ public final class Tracker {
 		}
 		while (Keys.edit.consumeClick()) {
 			if (mc.screen == null) {
-				mc.setScreen(new EditHudScreen());
+				mc.setScreen(new SettingsScreen(null));
 			}
 		}
 	}
@@ -360,9 +496,23 @@ public final class Tracker {
 
 	/** Called right after the client breaks a block (Fabric's ClientPlayerBlockBreakEvents.AFTER). */
 	public void onBlockBroken(ClientLevel level, LocalPlayer player, BlockPos pos, BlockState state) {
-		if (!running || state.isAir()) {
+		if (state.isAir()) {
 			return;
 		}
+		boolean pickaxe = isPickaxe(player.getMainHandItem(), state);
+		if (!recording) {
+			if (!ModConfig.get().autoMode || !pickaxe || !isMiningBlock(state) || !isAutoPlace(level)) {
+				return;
+			}
+			startRecording(false);
+		}
+		if (!countsHere(level)) {
+			return;
+		}
+		if (pickaxe) {
+			lastMineTick = tick;
+		}
+
 		BlockPos center = pos.immutable();
 		watches.remove(center);
 		addBlock(state.getBlock(), 1);
@@ -388,6 +538,40 @@ public final class Tracker {
 				}
 			}
 		}
+	}
+
+	private static boolean isPickaxe(ItemStack held, BlockState state) {
+		if (held.isEmpty()) {
+			return false;
+		}
+		return held.is(ItemTags.PICKAXES)
+				|| (state.is(BlockTags.MINEABLE_WITH_PICKAXE) && held.isCorrectToolForDrops(state))
+				// server tools made from other items still carry the word in their name
+				|| held.getHoverName().getString().contains("곡괭이");
+	}
+
+	/** Natural stone and ores: the blocks that start an automatic recording. */
+	private static boolean isMiningBlock(BlockState state) {
+		return state.is(BlockTags.BASE_STONE_OVERWORLD)
+				|| state.is(BlockTags.BASE_STONE_NETHER)
+				|| state.is(BlockTags.COAL_ORES)
+				|| state.is(BlockTags.IRON_ORES)
+				|| state.is(BlockTags.COPPER_ORES)
+				|| state.is(BlockTags.GOLD_ORES)
+				|| state.is(BlockTags.REDSTONE_ORES)
+				|| state.is(BlockTags.LAPIS_ORES)
+				|| state.is(BlockTags.DIAMOND_ORES)
+				|| state.is(BlockTags.EMERALD_ORES)
+				|| state.is(Blocks.NETHER_QUARTZ_ORE)
+				|| state.is(Blocks.ANCIENT_DEBRIS)
+				|| state.is(Blocks.CALCITE)
+				|| state.is(Blocks.DRIPSTONE_BLOCK)
+				|| state.is(Blocks.SMOOTH_BASALT)
+				|| state.is(Blocks.MAGMA_BLOCK)
+				|| state.is(Blocks.RAW_IRON_BLOCK)
+				|| state.is(Blocks.RAW_COPPER_BLOCK)
+				|| state.is(Blocks.RAW_GOLD_BLOCK)
+				|| state.is(Blocks.AMETHYST_BLOCK);
 	}
 
 	/** The server can refuse a break (protected area etc.) and put the block back: undo the count. */
@@ -433,7 +617,7 @@ public final class Tracker {
 				continue;
 			}
 			boolean gone = current.isAir() || current.getBlock() instanceof LiquidBlock;
-			if (!gone || !running) {
+			if (!gone || !recording) {
 				it.remove();
 				continue;
 			}
@@ -472,19 +656,30 @@ public final class Tracker {
 			return;
 		}
 		Entity entity = mc.level.getEntity(itemEntityId);
-		if (!(entity instanceof ItemEntity itemEntity)) {
+		TrackedItem info = tracked.get(itemEntityId);
+		ItemStack proto;
+		boolean late = false;
+		if (entity instanceof ItemEntity itemEntity) {
+			ItemStack stack = itemEntity.getItem();
+			if (info != null && !stack.isEmpty()) {
+				info.observeCount(stack.getCount(), tick); // before the game shrinks it
+			}
+			proto = !stack.isEmpty() ? stack.copyWithCount(1) : info != null ? info.proto : ItemStack.EMPTY;
+		} else if (entity == null && info != null && info.removedAt >= 0 && tick - info.removedAt <= LATE_TAKE_TICKS) {
+			proto = info.proto; // the server removed the item first and said who took it afterwards
+			late = true;
+		} else {
 			return;
 		}
 		takenByPacket.put(itemEntityId, tick);
-		if (collectorId != mc.player.getId() || !running) {
-			return;
-		}
-		ItemStack stack = itemEntity.getItem();
-		if (stack.isEmpty()) {
+		if (collectorId != mc.player.getId() || !countsHere(mc.level) || proto.isEmpty()) {
 			return;
 		}
 		stats.packetPickups++;
-		collect(stack.copyWithCount(1), amount);
+		if (late) {
+			stats.latePacketPickups++;
+		}
+		collect(proto, amount);
 	}
 
 	/** Called when an entity leaves the client world (Fabric's ClientEntityEvents.ENTITY_UNLOAD). */
@@ -492,90 +687,153 @@ public final class Tracker {
 		if (!(entity instanceof ItemEntity item)) {
 			return;
 		}
-		TrackedItem info = tracked.remove(item.getId());
+		TrackedItem info = tracked.get(item.getId());
+		ItemStack stack = item.getItem();
+		if (info != null) {
+			info.removedAt = tick;
+			if (!stack.isEmpty()) {
+				info.observeCount(stack.getCount(), tick);
+			}
+		}
 		if (item.getRemovalReason() != Entity.RemovalReason.DISCARDED) {
 			return;
 		}
 		LocalPlayer player = Minecraft.getInstance().player;
-		if (player == null) {
-			return;
+		if (player == null || stack.isEmpty()) {
+			return; // emptied by a pickup message (counted there if it was ours)
 		}
-		ItemStack stack = item.getItem();
-		if (stack.isEmpty() || takenByPacket.containsKey(item.getId())) {
-			return; // emptied by a pickup message (already counted, or someone else's pickup)
+		Long takenAt = takenByPacket.get(item.getId());
+		if (takenAt != null && tick - takenAt <= TAKEN_RECENT_TICKS) {
+			return; // the end of a pickup the server told us about
 		}
 		discardsThisTick++;
 		if (item.distanceToSqr(player) > 64.0) {
 			farDiscardsThisTick++;
 			return;
 		}
-		if (!running) {
+		if (!countsHere(level)) {
 			return;
 		}
-		if (!item.getBoundingBox().intersects(reachBox(player))) {
-			return;
-		}
-		if (info != null && info.reachSince >= 0 && tick - info.reachSince > FALLBACK_MAX_REACH_TICKS) {
-			stats.longReachSkips++;
-			return; // it lay next to the player for a while (full inventory) and was cleaned up
-		}
-		// remember same items close by: if one of them grows, this one merged into it
-		Map<Integer, Integer> nearby = new HashMap<>();
-		for (Map.Entry<Integer, TrackedItem> e : tracked.entrySet()) {
-			TrackedItem other = e.getValue();
-			if (other.pos.distanceToSqr(item.position()) <= 2.25
-					&& ItemStack.isSameItemSameComponents(other.proto, stack)) {
-				nearby.put(e.getKey(), other.count);
+
+		AABB box = item.getBoundingBox();
+		boolean nearNow = box.intersects(nearBox(player));
+		boolean nearRecently = info != null && tick - info.lastNear <= NEAR_RECENT_TICKS;
+		boolean close = box.intersects(closeBox(player));
+		boolean fresh = item.getAge() <= FRESH_TICKS;
+		if (!nearNow && !nearRecently && !(fresh && close)) {
+			if (close) {
+				stats.notNearSkips++;
 			}
+			return; // vanished somewhere else (merged with another item, or someone else took it)
 		}
-		candidates.add(new Candidate(stack.copyWithCount(1), stack.getCount(), tick, nearby));
+		if (info != null && lyingAround(info, box.intersects(pickupBox(player)))) {
+			stats.longReachSkips++;
+			return; // it lay next to the player without being picked up, then got cleaned up
+		}
+		if (item.isInLava() || item.isOnFire()) {
+			stats.lavaSkips++;
+			return;
+		}
+		if (otherPlayerTookIt(level, player, item)) {
+			stats.otherPlayerSkips++;
+			return;
+		}
+		candidates.add(new Candidate(item.getId(), stack.copyWithCount(1), stack.getCount(), tick, item.position()));
 	}
 
-	private static AABB reachBox(Player player) {
+	/** Right next to the player. */
+	private static AABB nearBox(Player player) {
 		return player.getBoundingBox().inflate(1.5, 1.0, 1.5);
 	}
 
+	/** Where the server lets the player pick items up (1 block around the player), plus a hair. */
+	private static AABB pickupBox(Player player) {
+		return player.getBoundingBox().inflate(1.1, 0.6, 1.1);
+	}
+
+	/** A bit further out: freshly dropped items can be here on our screen while the server has them closer. */
+	private static AABB closeBox(Player player) {
+		return player.getBoundingBox().inflate(2.5, 1.5, 2.5);
+	}
+
+	/**
+	 * True if the item had been lying by the player without being picked up: in pickup range for a long
+	 * time, or right next to the player for a long time without just now coming into pickup range.
+	 */
+	private boolean lyingAround(TrackedItem info, boolean inPickupRangeNow) {
+		if (info.pickupRangeSince >= 0 && tick - info.pickupRangeSince > PICKUP_RANGE_LYING_TICKS) {
+			return true;
+		}
+		boolean justReached = info.pickupRangeSince >= 0
+				? tick - info.pickupRangeSince <= JUST_REACHED_TICKS
+				: inPickupRangeNow;
+		return !justReached && info.nearSince >= 0 && tick - info.nearSince > NEAR_LYING_TICKS;
+	}
+
+	/** Another player is closer to the item and close enough to pick it up. */
+	private static boolean otherPlayerTookIt(ClientLevel level, LocalPlayer self, ItemEntity item) {
+		double mine = self.distanceToSqr(item);
+		AABB box = item.getBoundingBox();
+		for (AbstractClientPlayer other : level.players()) {
+			if (other == self || other.isSpectator()) {
+				continue;
+			}
+			if (other.distanceToSqr(item) < mine && pickupBox(other).intersects(box)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private void trackItems(ClientLevel level, LocalPlayer player) {
-		AABB reach = reachBox(player);
+		AABB near = nearBox(player);
+		AABB pickup = pickupBox(player);
 		for (ItemEntity e : level.getEntitiesOfClass(ItemEntity.class, player.getBoundingBox().inflate(8.0))) {
 			TrackedItem t = tracked.computeIfAbsent(e.getId(), id -> new TrackedItem());
 			ItemStack stack = e.getItem();
 			if (!stack.isEmpty()) {
 				t.proto = stack.copyWithCount(1);
-				t.count = stack.getCount();
+				t.observeCount(stack.getCount(), tick);
 			}
 			t.pos = e.position();
 			t.lastSeen = tick;
-			if (e.getBoundingBox().intersects(reach)) {
-				if (t.reachSince < 0) {
-					t.reachSince = tick;
+			AABB box = e.getBoundingBox();
+			if (box.intersects(near)) {
+				t.lastNear = tick;
+				if (t.nearSince < 0) {
+					t.nearSince = tick;
 				}
 			} else {
-				t.reachSince = -1;
+				t.nearSince = -1;
+			}
+			if (box.intersects(pickup)) {
+				if (t.pickupRangeSince < 0) {
+					t.pickupRangeSince = tick;
+				}
+			} else {
+				t.pickupRangeSince = -1;
 			}
 		}
-		tracked.values().removeIf(t -> tick - t.lastSeen > 40);
+		tracked.values().removeIf(t -> tick - t.lastSeen > 60);
 	}
 
-	private void resolveCandidates(ClientLevel level) {
+	/** Judges the vanished items once a merge would have shown up. {@code force}: judge all of them now. */
+	private void resolveCandidates(boolean force) {
 		for (Iterator<Candidate> it = candidates.iterator(); it.hasNext(); ) {
 			Candidate c = it.next();
-			if (tick - c.tick < 2) {
+			if (!force && tick - c.tick < RESOLVE_DELAY_TICKS) {
 				continue;
 			}
 			it.remove();
+			Long takenAt = takenByPacket.get(c.entityId);
+			if (takenAt != null && takenAt >= c.tick - 1) {
+				continue; // a pickup message came after all and was counted there
+			}
 			if (cleanupTicks.contains(c.tick)) {
 				stats.cleanupSkips++;
 				continue;
 			}
-			int grown = 0;
-			for (Map.Entry<Integer, Integer> e : c.nearby.entrySet()) {
-				Entity other = level.getEntity(e.getKey());
-				if (other instanceof ItemEntity otherItem && !otherItem.isRemoved()) {
-					grown += Math.max(0, otherItem.getItem().getCount() - e.getValue());
-				}
-			}
-			if (grown >= c.count) {
+			if (mergedAway(c)) {
 				stats.mergeSkips++;
 				continue; // merged into a neighbouring item, not picked up
 			}
@@ -584,57 +842,37 @@ public final class Tracker {
 		}
 	}
 
+	/** A same item close by grew by this item's count right when this one vanished: it merged into it. */
+	private boolean mergedAway(Candidate c) {
+		int grown = 0;
+		for (Map.Entry<Integer, TrackedItem> e : tracked.entrySet()) {
+			if (e.getKey() == c.entityId) {
+				continue;
+			}
+			TrackedItem other = e.getValue();
+			if (other.pos.distanceToSqr(c.pos) > MERGE_DIST_SQR
+					|| !ItemStack.isSameItemSameComponents(other.proto, c.proto)) {
+				continue;
+			}
+			grown += other.grownBetween(c.tick - MERGE_WINDOW_BEFORE, c.tick + RESOLVE_DELAY_TICKS);
+		}
+		return grown >= c.count;
+	}
+
 	private void collect(ItemStack proto, int amount) {
-		if (amount <= 0) {
+		if (amount <= 0 || !recording) {
 			return;
 		}
 		String key = keyOf(proto);
-		Pending p = pendings.get(key);
-		if (p == null) {
-			long since = Math.max(tick - 2, lastResolved.getOrDefault(key, Long.MIN_VALUE));
-			p = new Pending(key, proto, tick, countAt(since, key));
-			pendings.put(key, p);
+		ItemTally t = items.get(key);
+		if (t == null) {
+			t = new ItemTally(key, proto, isOther(proto));
+			items.put(key, t);
 		}
-		p.amount += amount;
-		p.lastTick = tick;
-	}
-
-	/** Decide storage vs inventory from how much the inventory grew, then add to the tally. */
-	private void resolvePendings(Player player, boolean force) {
-		for (Iterator<Pending> it = pendings.values().iterator(); it.hasNext(); ) {
-			Pending p = it.next();
-			if (!force && tick - p.lastTick < RESOLVE_QUIET_TICKS && tick - p.firstTick < RESOLVE_MAX_TICKS) {
-				continue;
-			}
-			it.remove();
-			int inventory = 0;
-			if (player != null) {
-				int grew = countNow(player, p.key) - p.baseline;
-				inventory = Math.max(0, Math.min(p.amount, grew));
-			}
-			int storage = p.amount - inventory;
-
-			ItemTally t = items.get(p.key);
-			if (t == null) {
-				t = new ItemTally(p.key, p.proto, isOther(p.proto));
-				items.put(p.key, t);
-			}
-			t.storage += storage;
-			t.inventory += inventory;
-			stats.toStorage += storage;
-			stats.toInventory += inventory;
-			dirty = true;
-			lastResolved.put(p.key, tick);
-
-			ModConfig cfg = ModConfig.get();
-			if (!t.other || cfg.toastOthers) {
-				if (storage > 0) {
-					toasts.push(p.key, t.icon, t.name, true, storage, tick);
-				}
-				if (inventory > 0) {
-					toasts.push(p.key, t.icon, t.name, false, inventory, tick);
-				}
-			}
+		t.count += amount;
+		dirty = true;
+		if (!t.other || ModConfig.get().toastOthers) {
+			toasts.push(key, t.icon, t.name, amount, tick);
 		}
 	}
 
@@ -649,57 +887,77 @@ public final class Tracker {
 		return BuiltInRegistries.ITEM.getKey(stack.getItem()) + "|" + stack.getHoverName().getString();
 	}
 
-	// ------------------------------------------------------------------ inventory snapshots
+	// ------------------------------------------------------------------ chat summary
 
-	private void snapshotInventory(Player player) {
-		Map<String, Integer> counts = new HashMap<>();
-		Inventory inventory = player.getInventory();
-		for (int i = 0; i < inventory.getContainerSize(); i++) {
-			ItemStack stack = inventory.getItem(i);
-			if (!stack.isEmpty()) {
-				counts.merge(keyOf(stack), stack.getCount(), Integer::sum);
+	private void postSummary(Minecraft mc) {
+		LocalPlayer player = mc.player;
+		if (player == null || isEmpty()) {
+			return;
+		}
+		player.displayClientMessage(Component.literal("[광질 측정] ").withStyle(ChatFormatting.AQUA)
+				.append(Component.literal("광질 기록 끝 · " + HudRenderer.formatTime(activeTicks)).withStyle(ChatFormatting.WHITE)), false);
+
+		List<BlockTally> bl = sortedBlocks();
+		if (!bl.isEmpty()) {
+			long total = 0;
+			for (BlockTally b : bl) {
+				total += b.count;
+			}
+			StringBuilder line = new StringBuilder();
+			int shown = Math.min(SUMMARY_BLOCKS, bl.size());
+			for (int i = 0; i < shown; i++) {
+				if (i > 0) {
+					line.append(", ");
+				}
+				line.append(bl.get(i).name).append(' ').append(HudRenderer.fmt(bl.get(i).count));
+			}
+			if (bl.size() > shown) {
+				long rest = 0;
+				for (int i = shown; i < bl.size(); i++) {
+					rest += bl.get(i).count;
+				}
+				line.append(", 외 ").append(bl.size() - shown).append("종 ").append(HudRenderer.fmt(rest));
+			}
+			player.displayClientMessage(Component.literal(" 캔 블록 " + HudRenderer.fmt(total) + "개: ").withStyle(ChatFormatting.GRAY)
+					.append(Component.literal(line.toString()).withStyle(ChatFormatting.WHITE)), false);
+		}
+
+		List<ItemTally> minerals = new ArrayList<>();
+		long othersCount = 0;
+		int othersKinds = 0;
+		for (ItemTally t : sortedItems()) {
+			if (t.other) {
+				othersCount += t.count;
+				othersKinds++;
+			} else {
+				minerals.add(t);
 			}
 		}
-		int index = (int) (tick % SNAPSHOT_SIZE);
-		snapshots.set(index, counts);
-		snapshotTicks[index] = tick;
-	}
-
-	/** Inventory count of {@code key} at the newest snapshot not later than {@code wantedTick}. */
-	private int countAt(long wantedTick, String key) {
-		Map<String, Integer> best = null;
-		long bestTick = Long.MIN_VALUE;
-		Map<String, Integer> oldest = null;
-		long oldestTick = Long.MAX_VALUE;
-		for (int i = 0; i < SNAPSHOT_SIZE; i++) {
-			Map<String, Integer> snap = snapshots.get(i);
-			if (snap == null) {
-				continue;
+		if (!minerals.isEmpty() || othersKinds > 0) {
+			StringBuilder line = new StringBuilder();
+			int shown = Math.min(SUMMARY_ITEMS, minerals.size());
+			for (int i = 0; i < shown; i++) {
+				if (i > 0) {
+					line.append(", ");
+				}
+				line.append(minerals.get(i).name).append(' ').append(HudRenderer.fmt(minerals.get(i).count));
 			}
-			long t = snapshotTicks[i];
-			if (t <= wantedTick && t > bestTick) {
-				best = snap;
-				bestTick = t;
+			if (minerals.size() > shown) {
+				long rest = 0;
+				for (int i = shown; i < minerals.size(); i++) {
+					rest += minerals.get(i).count;
+				}
+				line.append(", 외 ").append(minerals.size() - shown).append("종 ").append(HudRenderer.fmt(rest));
 			}
-			if (t < oldestTick) {
-				oldest = snap;
-				oldestTick = t;
+			if (othersKinds > 0) {
+				if (line.length() > 0) {
+					line.append(" · ");
+				}
+				line.append("기타 ").append(othersKinds).append("종 ").append(HudRenderer.fmt(othersCount));
 			}
+			player.displayClientMessage(Component.literal(" 먹은 광물: ").withStyle(ChatFormatting.GRAY)
+					.append(Component.literal(line.toString()).withStyle(ChatFormatting.WHITE)), false);
 		}
-		Map<String, Integer> use = best != null ? best : oldest;
-		return use == null ? 0 : use.getOrDefault(key, 0);
-	}
-
-	private static int countNow(Player player, String key) {
-		int total = 0;
-		Inventory inventory = player.getInventory();
-		for (int i = 0; i < inventory.getContainerSize(); i++) {
-			ItemStack stack = inventory.getItem(i);
-			if (!stack.isEmpty() && keyOf(stack).equals(key)) {
-				total += stack.getCount();
-			}
-		}
-		return total;
 	}
 
 	// ------------------------------------------------------------------ sorting
@@ -711,7 +969,7 @@ public final class Tracker {
 		List<BlockTally> b = new ArrayList<>(blocks.values());
 		b.sort(Comparator.comparingLong((BlockTally t) -> t.count).reversed().thenComparing(t -> t.name));
 		List<ItemTally> i = new ArrayList<>(items.values());
-		i.sort(Comparator.comparingLong(ItemTally::total).reversed().thenComparing(t -> t.name));
+		i.sort(Comparator.comparingLong((ItemTally t) -> t.count).reversed().thenComparing(t -> t.name));
 		sortedBlocks = b;
 		sortedItems = i;
 		dirty = false;
