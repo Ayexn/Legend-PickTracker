@@ -24,11 +24,13 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -40,14 +42,15 @@ import java.util.Set;
  * wild world (야생), and ends after a set time without mining. Manual mode: F7 starts and ends it.
  *
  * <p>Blocks: the block the player breaks is counted right away (and taken back if the server puts it
- * back); solid blocks right next to it that disappear within a moment are counted too, which covers
- * skills that break 3x3 at once.
+ * back, unless the server breaks it again itself right after); solid blocks right next to it that
+ * disappear within a moment are counted too, which covers skills that break 3x3 at once.
  *
  * <p>Items: a pickup is counted when the server tells the client this player picked the item up. If a
  * server plugin removes the item without that message (for example when it goes straight into the item
  * storage), an item that vanishes next to the player is counted instead, unless it merged into another
  * item, was picked up by someone closer, burned, or had been lying in pickup range for a long time
- * (then it was cleaned up, not picked up).
+ * (then it was cleaned up, not picked up). Merges are told apart by amount: an item that grew nearby
+ * explains at most as many vanished items as it grew by, and whatever is left was picked up.
  */
 public final class Tracker {
 	public static final Tracker INSTANCE = new Tracker();
@@ -70,15 +73,38 @@ public final class Tracker {
 	private static final int NEAR_LYING_TICKS = 300;
 	/** Came into pickup range this recently: a real pickup even if it lay nearby for a long time. */
 	private static final int JUST_REACHED_TICKS = 40;
-	/** Wait this long before deciding, so a merge shows up as another item growing. */
-	private static final int RESOLVE_DELAY_TICKS = 4;
-	private static final int MERGE_WINDOW_BEFORE = 2;
-	private static final double MERGE_DIST_SQR = 1.5 * 1.5;
+	/**
+	 * A merge shows up as the other item growing after this one vanished: the server sends the removal right
+	 * away and the new count on its next tick. Look for that growth from a tick before to a few ticks after.
+	 */
+	private static final int MERGE_WINDOW_BEFORE = 1;
+	private static final int MERGE_WINDOW_AFTER = 5;
+	/** Usually the growth is seen two ticks after the removal (next server tick, read at the end of ours). */
+	private static final int MERGE_USUAL_DELAY = 2;
+	/** Wait this long before deciding, so a merge has shown up as another item growing. */
+	private static final int RESOLVE_DELAY_TICKS = MERGE_WINDOW_AFTER + 1;
+	/**
+	 * When an item of ours vanished next to a merge, wait until every item that vanished around the same time
+	 * without being ours has claimed its merge, so the merge is not taken for ours.
+	 */
+	private static final int SETTLE_TICKS = RESOLVE_DELAY_TICKS + MERGE_WINDOW_BEFORE + MERGE_WINDOW_AFTER;
+	/**
+	 * How far apart items can merge. Vanilla merges items within 0.75 blocks, but servers can set it higher
+	 * (spigot.yml merge-radius), so this covers up to about 4 blocks. Merges are matched by amount, so looking
+	 * further does not make pickups disappear.
+	 */
+	private static final double MERGE_REACH = 4.5;
+	private static final double MERGE_REACH_Y = 3.0;
+	/** Items are followed this far from the player, so the item another one merged into is seen too. */
+	private static final double ITEM_TRACK_RANGE = 16.0;
+	/** Count increases are kept this long for matching. */
+	private static final int GROWTH_KEEP_TICKS = 40;
 	/** A removal this soon after a pickup message belongs to that pickup. */
 	private static final int TAKEN_RECENT_TICKS = 20;
 	/** A pickup message this soon after the item vanished still counts (some servers send it late). */
 	private static final int LATE_TAKE_TICKS = 10;
-	private static final int GROWTH_SLOTS = 8;
+	/** How far the merge matching looks for a better arrangement (items visited). */
+	private static final int MATCH_SEARCH_LIMIT = 40;
 	/** Short breaks while mining (up to 10 seconds) still count as mining time. */
 	private static final int ACTIVE_GRACE_TICKS = 200;
 	private static final int SUMMARY_BLOCKS = 5;
@@ -127,6 +153,13 @@ public final class Tracker {
 		public long lavaSkips;
 		public long neighborBlocks;
 		public long restoredBlocks;
+		/** Put back by the server, then broken by the server right after: counted again. */
+		public long rebrokenBlocks;
+		/**
+		 * When an item grew (something merged into it), how far away the closest same item that vanished then
+		 * was: up to 1 block, 1-2, 2-3, more. Shows how far this server merges items (vanilla: under 1 block).
+		 */
+		public final long[] mergeDistance = new long[4];
 	}
 
 	private static final class PrimaryCheck {
@@ -144,18 +177,22 @@ public final class Tracker {
 	private static final class NeighborWatch {
 		final BlockPos pos;
 		final BlockState state;
+		/** A block we broke that the server put back: if the server breaks it right after, it counts again. */
+		final boolean restored;
 		long expires;
 		long goneAt = -1;
 
-		NeighborWatch(BlockPos pos, BlockState state, long expires) {
+		NeighborWatch(BlockPos pos, BlockState state, long expires, boolean restored) {
 			this.pos = pos;
 			this.state = state;
 			this.expires = expires;
+			this.restored = restored;
 		}
 	}
 
 	/** What we know about an item entity near the player (kept a few seconds after it vanishes). */
 	private static final class TrackedItem {
+		final int id;
 		ItemStack proto = ItemStack.EMPTY;
 		int count;
 		Vec3 pos = Vec3.ZERO;
@@ -167,28 +204,51 @@ public final class Tracker {
 		/** Continuously in pickup range since this tick, or -1. */
 		long pickupRangeSince = -1;
 		long removedAt = -1;
-		/** Recent count increases (another item merged into this one): when and how much. */
-		final long[] growTick = new long[GROWTH_SLOTS];
-		final int[] growAmount = new int[GROWTH_SLOTS];
-		int growNext;
 
-		void observeCount(int newCount, long now) {
-			if (count > 0 && newCount > count) {
-				growTick[growNext] = now;
-				growAmount[growNext] = newCount - count;
-				growNext = (growNext + 1) % GROWTH_SLOTS;
-			}
-			count = newCount;
+		TrackedItem(int id) {
+			this.id = id;
 		}
 
-		int grownBetween(long from, long to) {
-			int sum = 0;
-			for (int i = 0; i < GROWTH_SLOTS; i++) {
-				if (growAmount[i] > 0 && growTick[i] >= from && growTick[i] <= to) {
-					sum += growAmount[i];
-				}
+		/** Returns the increase if the count went up (something merged into it), else null. */
+		Growth observeCount(int newCount, long now) {
+			Growth grew = count > 0 && newCount > count ? new Growth(this, now, newCount - count) : null;
+			count = newCount;
+			return grew;
+		}
+	}
+
+	/** A count increase of an item: something merged into it. */
+	private static final class Growth {
+		final TrackedItem item;
+		final long tick;
+		final int amount;
+		/** The vanished items this increase explains, and how much of it each one uses. */
+		final Map<Candidate, Integer> users = new LinkedHashMap<>();
+		int used;
+
+		Growth(TrackedItem item, long tick, int amount) {
+			this.item = item;
+			this.tick = tick;
+			this.amount = amount;
+		}
+
+		int free() {
+			return amount - used;
+		}
+
+		void use(Candidate c, int n) {
+			users.merge(c, n, Integer::sum);
+			used += n;
+		}
+
+		void release(Candidate c, int n) {
+			int left = users.getOrDefault(c, 0) - n;
+			if (left > 0) {
+				users.put(c, left);
+			} else {
+				users.remove(c);
 			}
-			return sum;
+			used -= n;
 		}
 	}
 
@@ -199,13 +259,23 @@ public final class Tracker {
 		final int count;
 		final long tick;
 		final Vec3 pos;
+		/**
+		 * false: an item that vanished nearby but was not picked up by us. It is never counted, it only claims
+		 * the increase of the item it merged into, so that increase cannot be mistaken for another item's merge.
+		 */
+		final boolean counts;
 
-		Candidate(int entityId, ItemStack proto, int count, long tick, Vec3 pos) {
+		Candidate(int entityId, ItemStack proto, int count, long tick, Vec3 pos, boolean counts) {
 			this.entityId = entityId;
 			this.proto = proto;
 			this.count = count;
 			this.tick = tick;
 			this.pos = pos;
+			this.counts = counts;
+		}
+
+		Candidate shadow() {
+			return new Candidate(entityId, proto, count, tick, pos, false);
 		}
 	}
 
@@ -229,6 +299,9 @@ public final class Tracker {
 	private final List<PrimaryCheck> primaryChecks = new ArrayList<>();
 	private final Map<BlockPos, NeighborWatch> watches = new HashMap<>();
 	private final Map<Integer, TrackedItem> tracked = new HashMap<>();
+	private final List<Growth> recentGrowth = new ArrayList<>();
+	/** Items that vanished nearby lately (for the merge distance in /광질 진단). */
+	private final List<Candidate> recentVanished = new ArrayList<>();
 	private final Map<Integer, Long> takenByPacket = new HashMap<>();
 	private final List<Candidate> candidates = new ArrayList<>();
 	private final Set<Long> cleanupTicks = new HashSet<>();
@@ -362,6 +435,8 @@ public final class Tracker {
 		stats.lavaSkips = 0;
 		stats.neighborBlocks = 0;
 		stats.restoredBlocks = 0;
+		stats.rebrokenBlocks = 0;
+		java.util.Arrays.fill(stats.mergeDistance, 0);
 		dirty = true;
 	}
 
@@ -439,6 +514,9 @@ public final class Tracker {
 		resolveCandidates(false);
 		toasts.tick(tick);
 		takenByPacket.values().removeIf(t -> tick - t > 100);
+		measureMergeDistance();
+		recentGrowth.removeIf(g -> tick - g.tick > GROWTH_KEEP_TICKS);
+		recentVanished.removeIf(v -> tick - v.tick > GROWTH_KEEP_TICKS);
 		cleanupTicks.removeIf(t -> tick - t > 20);
 	}
 
@@ -452,6 +530,8 @@ public final class Tracker {
 		primaryChecks.clear();
 		watches.clear();
 		tracked.clear();
+		recentGrowth.clear();
+		recentVanished.clear();
 		takenByPacket.clear();
 		candidates.clear();
 	}
@@ -534,7 +614,7 @@ public final class Tracker {
 					if (ns.isAir() || !ns.isCollisionShapeFullBlock(level, n)) {
 						continue;
 					}
-					watches.put(n, new NeighborWatch(n, ns, tick + WATCH_TICKS));
+					watches.put(n, new NeighborWatch(n, ns, tick + WATCH_TICKS, false));
 				}
 			}
 		}
@@ -574,7 +654,11 @@ public final class Tracker {
 				|| state.is(Blocks.AMETHYST_BLOCK);
 	}
 
-	/** The server can refuse a break (protected area etc.) and put the block back: undo the count. */
+	/**
+	 * The server can refuse a break (protected area etc.) and put the block back: undo the count. Some servers
+	 * put it back and then break it themselves a moment later, so the block is watched and counted again if
+	 * it disappears without the player mining it again.
+	 */
 	private void checkPrimaries(ClientLevel level) {
 		for (Iterator<PrimaryCheck> it = primaryChecks.iterator(); it.hasNext(); ) {
 			PrimaryCheck c = it.next();
@@ -582,6 +666,7 @@ public final class Tracker {
 				addBlock(c.state.getBlock(), -1);
 				stats.restoredBlocks++;
 				it.remove();
+				watches.putIfAbsent(c.pos, new NeighborWatch(c.pos, c.state, tick + WATCH_TICKS, true));
 			} else if (tick - c.tick > PRIMARY_CHECK_TICKS) {
 				it.remove();
 			}
@@ -602,8 +687,7 @@ public final class Tracker {
 				if (tick - w.goneAt >= 2) {
 					boolean fell = !level.getEntitiesOfClass(FallingBlockEntity.class, new AABB(w.pos).inflate(1.0)).isEmpty();
 					if (!fell) {
-						addBlock(w.state.getBlock(), 1);
-						stats.neighborBlocks++;
+						countWatched(w);
 					}
 					it.remove();
 				}
@@ -625,9 +709,17 @@ public final class Tracker {
 				w.goneAt = tick;
 				continue;
 			}
-			addBlock(w.state.getBlock(), 1);
-			stats.neighborBlocks++;
+			countWatched(w);
 			it.remove();
+		}
+	}
+
+	private void countWatched(NeighborWatch w) {
+		addBlock(w.state.getBlock(), 1);
+		if (w.restored) {
+			stats.rebrokenBlocks++;
+		} else {
+			stats.neighborBlocks++;
 		}
 	}
 
@@ -649,6 +741,21 @@ public final class Tracker {
 
 	// ------------------------------------------------------------------ items
 
+	private void observe(TrackedItem info, int count, long when) {
+		Growth grew = info.observeCount(count, when);
+		if (grew != null) {
+			recentGrowth.add(grew);
+		}
+	}
+
+	/**
+	 * Packets are handled before the end of the tick, where {@link #trackItems} reads the counts as tick + 1;
+	 * a count seen in a packet is stamped the same way, so both line up when matching merges.
+	 */
+	private long packetTick() {
+		return tick + 1;
+	}
+
 	/** Called (on the main thread) when the server says an entity picked up an item. */
 	public void onTakeItemPacket(int itemEntityId, int collectorId, int amount) {
 		Minecraft mc = Minecraft.getInstance();
@@ -662,7 +769,7 @@ public final class Tracker {
 		if (entity instanceof ItemEntity itemEntity) {
 			ItemStack stack = itemEntity.getItem();
 			if (info != null && !stack.isEmpty()) {
-				info.observeCount(stack.getCount(), tick); // before the game shrinks it
+				observe(info, stack.getCount(), packetTick()); // before the game shrinks it
 			}
 			proto = !stack.isEmpty() ? stack.copyWithCount(1) : info != null ? info.proto : ItemStack.EMPTY;
 		} else if (entity == null && info != null && info.removedAt >= 0 && tick - info.removedAt <= LATE_TAKE_TICKS) {
@@ -692,7 +799,7 @@ public final class Tracker {
 		if (info != null) {
 			info.removedAt = tick;
 			if (!stack.isEmpty()) {
-				info.observeCount(stack.getCount(), tick);
+				observe(info, stack.getCount(), packetTick());
 			}
 		}
 		if (item.getRemovalReason() != Entity.RemovalReason.DISCARDED) {
@@ -707,14 +814,19 @@ public final class Tracker {
 			return; // the end of a pickup the server told us about
 		}
 		discardsThisTick++;
-		if (item.distanceToSqr(player) > 64.0) {
+		double distSqr = item.distanceToSqr(player);
+		if (distSqr > 64.0) {
 			farDiscardsThisTick++;
+		}
+		if (distSqr > ITEM_TRACK_RANGE * ITEM_TRACK_RANGE) {
 			return;
 		}
 		if (!countsHere(level)) {
 			return;
 		}
 
+		Candidate candidate = new Candidate(item.getId(), stack.copyWithCount(1), stack.getCount(), tick, item.position(), true);
+		recentVanished.add(candidate);
 		AABB box = item.getBoundingBox();
 		boolean nearNow = box.intersects(nearBox(player));
 		boolean nearRecently = info != null && tick - info.lastNear <= NEAR_RECENT_TICKS;
@@ -724,10 +836,12 @@ public final class Tracker {
 			if (close) {
 				stats.notNearSkips++;
 			}
+			candidates.add(candidate.shadow());
 			return; // vanished somewhere else (merged with another item, or someone else took it)
 		}
 		if (info != null && lyingAround(info, box.intersects(pickupBox(player)))) {
 			stats.longReachSkips++;
+			candidates.add(candidate.shadow());
 			return; // it lay next to the player without being picked up, then got cleaned up
 		}
 		if (item.isInLava() || item.isOnFire()) {
@@ -738,7 +852,7 @@ public final class Tracker {
 			stats.otherPlayerSkips++;
 			return;
 		}
-		candidates.add(new Candidate(item.getId(), stack.copyWithCount(1), stack.getCount(), tick, item.position()));
+		candidates.add(candidate);
 	}
 
 	/** Right next to the player. */
@@ -788,12 +902,12 @@ public final class Tracker {
 	private void trackItems(ClientLevel level, LocalPlayer player) {
 		AABB near = nearBox(player);
 		AABB pickup = pickupBox(player);
-		for (ItemEntity e : level.getEntitiesOfClass(ItemEntity.class, player.getBoundingBox().inflate(8.0))) {
-			TrackedItem t = tracked.computeIfAbsent(e.getId(), id -> new TrackedItem());
+		for (ItemEntity e : level.getEntitiesOfClass(ItemEntity.class, player.getBoundingBox().inflate(ITEM_TRACK_RANGE))) {
+			TrackedItem t = tracked.computeIfAbsent(e.getId(), TrackedItem::new);
 			ItemStack stack = e.getItem();
 			if (!stack.isEmpty()) {
 				t.proto = stack.copyWithCount(1);
-				t.observeCount(stack.getCount(), tick);
+				observe(t, stack.getCount(), tick);
 			}
 			t.pos = e.position();
 			t.lastSeen = tick;
@@ -817,11 +931,23 @@ public final class Tracker {
 		tracked.values().removeIf(t -> tick - t.lastSeen > 60);
 	}
 
-	/** Judges the vanished items once a merge would have shown up. {@code force}: judge all of them now. */
+	/**
+	 * Judges the vanished items once a merge would have shown up. Items that were not ours claim their merges
+	 * first; one of ours with a merge next to it waits a little longer for them, so a pickup is not taken for
+	 * a merge that happened beside it. {@code force}: judge all of them now.
+	 */
 	private void resolveCandidates(boolean force) {
 		for (Iterator<Candidate> it = candidates.iterator(); it.hasNext(); ) {
 			Candidate c = it.next();
-			if (!force && tick - c.tick < RESOLVE_DELAY_TICKS) {
+			if (!c.counts && (force || tick - c.tick >= RESOLVE_DELAY_TICKS)) {
+				it.remove();
+				explainByMerges(c); // only claims the increase it caused
+			}
+		}
+		for (Iterator<Candidate> it = candidates.iterator(); it.hasNext(); ) {
+			Candidate c = it.next();
+			long age = tick - c.tick;
+			if (!force && (age < RESOLVE_DELAY_TICKS || age < SETTLE_TICKS && !mergeOptions(c).isEmpty())) {
 				continue;
 			}
 			it.remove();
@@ -833,30 +959,128 @@ public final class Tracker {
 				stats.cleanupSkips++;
 				continue;
 			}
-			if (mergedAway(c)) {
+			int merged = explainByMerges(c);
+			if (merged >= c.count) {
 				stats.mergeSkips++;
 				continue; // merged into a neighbouring item, not picked up
 			}
 			stats.fallbackPickups++;
-			collect(c.proto, c.count);
+			collect(c.proto, c.count - merged);
 		}
 	}
 
-	/** A same item close by grew by this item's count right when this one vanished: it merged into it. */
-	private boolean mergedAway(Candidate c) {
-		int grown = 0;
-		for (Map.Entry<Integer, TrackedItem> e : tracked.entrySet()) {
-			if (e.getKey() == c.entityId) {
-				continue;
+	/** For /광질 진단: how far from a growing item the closest same item that vanished just before it was. */
+	private void measureMergeDistance() {
+		for (Growth g : recentGrowth) {
+			if (tick - g.tick != MERGE_WINDOW_AFTER) {
+				continue; // once, after every removal that could belong to it has been seen
 			}
-			TrackedItem other = e.getValue();
-			if (other.pos.distanceToSqr(c.pos) > MERGE_DIST_SQR
-					|| !ItemStack.isSameItemSameComponents(other.proto, c.proto)) {
-				continue;
+			double best = Double.MAX_VALUE;
+			for (Candidate v : recentVanished) {
+				if (v.entityId != g.item.id && v.tick >= g.tick - MERGE_WINDOW_AFTER && v.tick <= g.tick + MERGE_WINDOW_BEFORE
+						&& ItemStack.isSameItemSameComponents(v.proto, g.item.proto)) {
+					best = Math.min(best, Math.max(Math.abs(v.pos.x - g.item.pos.x), Math.abs(v.pos.z - g.item.pos.z)));
+				}
 			}
-			grown += other.grownBetween(c.tick - MERGE_WINDOW_BEFORE, c.tick + RESOLVE_DELAY_TICKS);
+			if (best < Double.MAX_VALUE) {
+				stats.mergeDistance[Math.min(3, (int) best)]++;
+			}
 		}
-		return grown >= c.count;
+	}
+
+	/**
+	 * Increases of same items right next to a vanished item, around the time it vanished: where it could have
+	 * merged into. The one closest to the usual timing comes first, then the closest item.
+	 */
+	private List<Growth> mergeOptions(Candidate c) {
+		long from = c.tick - MERGE_WINDOW_BEFORE;
+		long to = c.tick + MERGE_WINDOW_AFTER;
+		long usual = c.tick + MERGE_USUAL_DELAY;
+		List<Growth> found = new ArrayList<>();
+		for (Growth g : recentGrowth) {
+			TrackedItem other = g.item;
+			if (g.tick < from || g.tick > to || other.id == c.entityId) {
+				continue;
+			}
+			if (Math.abs(other.pos.x - c.pos.x) > MERGE_REACH || Math.abs(other.pos.z - c.pos.z) > MERGE_REACH
+					|| Math.abs(other.pos.y - c.pos.y) > MERGE_REACH_Y || !ItemStack.isSameItemSameComponents(other.proto, c.proto)) {
+				continue;
+			}
+			found.add(g);
+		}
+		found.sort(Comparator.comparingLong((Growth g) -> Math.abs(g.tick - usual))
+				.thenComparingDouble(g -> g.item.pos.distanceToSqr(c.pos)));
+		return found;
+	}
+
+	/**
+	 * How much of a vanished item went into same items right next to it. Merging moves items without changing
+	 * the total, so an increase can explain only as much as it added; what is left unexplained was picked up.
+	 * When the increases nearby are already used by other vanished items, those are moved to other increases
+	 * they could have gone into as well, so that as many merges as possible are explained. (The items that move
+	 * keep the amount they had, so nothing that was already counted changes.)
+	 */
+	private int explainByMerges(Candidate c) {
+		List<Growth> options = mergeOptions(c);
+		if (options.isEmpty()) {
+			return 0;
+		}
+		int need = c.count;
+		while (need > 0) {
+			// breadth-first search: c -> an increase -> an item using it -> another increase it could use -> ...
+			Map<Growth, Candidate> reachedFrom = new HashMap<>();
+			Map<Candidate, Growth> leaves = new HashMap<>();
+			ArrayDeque<Candidate> queue = new ArrayDeque<>();
+			queue.add(c);
+			leaves.put(c, null);
+			Growth end = null;
+			int steps = 0;
+			search:
+			while (!queue.isEmpty() && steps++ < MATCH_SEARCH_LIMIT) {
+				Candidate x = queue.poll();
+				for (Growth g : mergeOptions(x)) {
+					if (reachedFrom.containsKey(g)) {
+						continue;
+					}
+					reachedFrom.put(g, x);
+					if (g.free() > 0) {
+						end = g;
+						break search;
+					}
+					for (Candidate y : g.users.keySet()) {
+						if (!leaves.containsKey(y)) {
+							leaves.put(y, g);
+							queue.add(y);
+						}
+					}
+				}
+			}
+			if (end == null) {
+				break;
+			}
+			// how much can go along the path
+			int amount = Math.min(need, end.free());
+			for (Growth g = end; reachedFrom.get(g) != c; ) {
+				Candidate x = reachedFrom.get(g);
+				Growth off = leaves.get(x);
+				amount = Math.min(amount, off.users.get(x));
+				g = off;
+			}
+			// move it
+			Growth g = end;
+			while (true) {
+				Candidate x = reachedFrom.get(g);
+				g.use(x, amount);
+				if (x == c) {
+					break;
+				}
+				Growth off = leaves.get(x);
+				off.release(x, amount);
+				g = off;
+			}
+			need -= amount;
+		}
+		return c.count - need;
 	}
 
 	private void collect(ItemStack proto, int amount) {

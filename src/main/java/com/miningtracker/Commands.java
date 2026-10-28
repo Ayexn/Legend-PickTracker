@@ -106,7 +106,10 @@ public final class Commands {
 		lines.add(" 옆에서 사라진 걸로 센 획득: " + s.fallbackPickups + "번");
 		lines.add(" 안 센 것: 합쳐짐 " + s.mergeSkips + ", 청소 " + s.cleanupSkips + ", 오래 놓여 있음 " + s.longReachSkips
 				+ ", 조금 떨어져서 사라짐 " + s.notNearSkips + ", 다른 사람 " + s.otherPlayerSkips + ", 용암·불 " + s.lavaSkips);
-		lines.add(" 주변 블록으로 센 블록(3x3 등): " + s.neighborBlocks + "개 · 서버가 되돌려서 뺀 블록: " + s.restoredBlocks + "개");
+		long[] md = s.mergeDistance;
+		lines.add(" 합쳐질 때 거리: 1칸 안 " + md[0] + "번, 1~2칸 " + md[1] + "번, 2~3칸 " + md[2] + "번, 3칸 넘게 " + md[3] + "번");
+		lines.add(" 주변 블록으로 센 블록(3x3 등): " + s.neighborBlocks + "개");
+		lines.add(" 서버가 되돌린 블록: " + s.restoredBlocks + "개 (그중 서버가 바로 다시 깨서 다시 센 것 " + s.rebrokenBlocks + "개)");
 		for (String line : lines) {
 			source.sendFeedback(Component.literal(line));
 		}
