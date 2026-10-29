@@ -49,39 +49,54 @@ public final class EditHudScreen extends Screen {
 		boardRect = HudRenderer.drawBoard(g, this.font, panel, cfg, theme);
 		toastRect = HudRenderer.drawToastsStatic(g, this.font, sampleToasts, cfg, theme);
 
-		outline(g, boardRect, color(Target.BOARD, boardRect, mouseX, mouseY));
-		outline(g, toastRect, color(Target.TOASTS, toastRect, mouseX, mouseY));
-		label(g, "집계판 " + percent(boardScale(cfg)), boardRect);
-		label(g, "획득 알림 " + percent(cfg.toastScale), toastRect);
+		int boardColor = color(theme, Target.BOARD, boardRect, mouseX, mouseY);
+		int toastColor = color(theme, Target.TOASTS, toastRect, mouseX, mouseY);
+		outline(g, boardRect, boardColor);
+		outline(g, toastRect, toastColor);
+		label(g, theme, "집계판 · " + percent(boardScale(cfg)), boardRect, boardColor);
+		label(g, theme, "획득 알림 · " + percent(cfg.toastScale), toastRect, toastColor);
 
-		int cx = this.width / 2;
-		int top = isBar(cfg) ? Math.max(8, (int) (boardRect[1] + boardRect[3]) + 18) : 8;
-		g.drawCenteredString(this.font, "끌어서 위치 이동  ·  마우스 휠로 크기 조절", cx, top, 0xFFFFFFFF);
-		g.drawCenteredString(this.font, parent != null ? "R: 기본 위치로  ·  ESC: 저장하고 설정으로" : "R: 기본 위치로  ·  ESC: 저장하고 닫기",
-				cx, top + 12, 0xFFB8C0CC);
+		String hint1 = "끌어서 위치 이동  ·  마우스 휠로 크기 조절";
+		String hint2 = parent != null ? "R: 기본 위치로  ·  ESC: 저장하고 설정으로" : "R: 기본 위치로  ·  ESC: 저장하고 닫기";
+		int hw = Math.max(this.font.width(hint1), this.font.width(hint2)) + 16;
+		int hx = (this.width - hw) / 2;
+		int top = isBar(cfg) ? Math.max(6, (int) (boardRect[1] + boardRect[3]) + 16) : 6;
+		theme.panel(g, hx, top, hw, 26, true);
+		g.drawCenteredString(this.font, hint1, this.width / 2, top + 4, theme.text);
+		g.drawCenteredString(this.font, hint2, this.width / 2, top + 15, theme.dim);
 	}
 
-	private int color(Target target, float[] rect, int mouseX, int mouseY) {
+	/** Accent colour; lighter under the mouse, white while dragging. */
+	private int color(Theme theme, Target target, float[] rect, int mouseX, int mouseY) {
 		if (dragging == target) {
-			return 0xFFFFD866;
+			return 0xFFFFFFFF;
 		}
-		return inside(rect, mouseX, mouseY) ? 0xFFFFFFFF : 0xFF8FB4FF;
+		return inside(rect, mouseX, mouseY) ? Theme.mix(theme.accent, 0xFFFFFFFF, 0.5f) : theme.accent;
 	}
 
-	private void label(GuiGraphics g, String text, float[] rect) {
-		int x = (int) rect[0];
-		int y = (int) rect[1] - 11;
+	/**
+	 * A small name tag above the box (below it when there is no room above), at its left end, or at its right
+	 * end for a box on the right half of the screen, and never past the edge of the screen.
+	 */
+	private void label(GuiGraphics g, Theme theme, String text, float[] rect, int color) {
+		int w = this.font.width(text) + 8;
+		int left = (int) Math.floor(rect[0]) - 2;
+		int right = (int) Math.ceil(rect[0] + rect[2]) + 2;
+		int x = rect[0] + rect[2] / 2f > this.width / 2f ? right - w : left;
+		x = Math.max(2, Math.min(x, this.width - w - 2));
+		int y = (int) rect[1] - 15;
 		if (y < 2) {
-			y = (int) (rect[1] + rect[3]) + 3;
+			y = (int) (rect[1] + rect[3]) + 4;
 		}
-		g.drawString(this.font, text, x, y, 0xFFFFFFFF, true);
+		Theme.rrect(g, x, y, w, 11, color, 1);
+		g.drawString(this.font, text, x + 4, y + 2, Theme.readableOn(color), false);
 	}
 
 	private static void outline(GuiGraphics g, float[] r, int color) {
-		int x1 = (int) Math.floor(r[0]) - 1;
-		int y1 = (int) Math.floor(r[1]) - 1;
-		int x2 = (int) Math.ceil(r[0] + r[2]) + 1;
-		int y2 = (int) Math.ceil(r[1] + r[3]) + 1;
+		int x1 = (int) Math.floor(r[0]) - 2;
+		int y1 = (int) Math.floor(r[1]) - 2;
+		int x2 = (int) Math.ceil(r[0] + r[2]) + 2;
+		int y2 = (int) Math.ceil(r[1] + r[3]) + 2;
 		g.fill(x1, y1, x2, y1 + 1, color);
 		g.fill(x1, y2 - 1, x2, y2, color);
 		g.fill(x1, y1, x1 + 1, y2, color);

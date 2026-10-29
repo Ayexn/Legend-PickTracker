@@ -61,8 +61,8 @@ public final class ModConfig {
 	// ---- display ----
 	/** 집계판 모양: detail (자세히), slim (슬림), icons (아이콘), bar (한 줄). */
 	public String layout = HudLayout.SLIM.id;
-	/** 테마: default, vanilla, inventory, black, clear. */
-	public String theme = Theme.DEFAULT.id;
+	/** 테마: mint (민트), blue (파랑), purple (보라), orange (주황), white (흰색), clear (투명). */
+	public String theme = Theme.MINT.id;
 	public boolean hudVisible = true;
 	public boolean toastsEnabled = true;
 	public boolean toastOthers = false;

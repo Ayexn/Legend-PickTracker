@@ -3,5 +3,6 @@
 	"key.mining-tracker.toggle": "Show/hide tally board",
 	"key.mining-tracker.pause": "Start/stop recording",
 	"key.mining-tracker.reset": "Reset counts (press twice)",
-	"key.mining-tracker.edit": "Open settings"
+	"key.mining-tracker.edit": "Open settings",
+	"key.mining-tracker.stats": "Open statistics"
 }

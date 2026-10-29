@@ -30,7 +30,7 @@ public final class Commands {
 				.then(literal("일시정지").executes(c -> stop(c.getSource())))
 				.then(literal("초기화").executes(c -> {
 					Tracker.INSTANCE.clearTallies();
-					return reply(c.getSource(), "기록을 초기화했어요.");
+					return reply(c.getSource(), "집계판을 초기화했어요. 지금까지 캔 건 광질 통계에 남아요.");
 				}))
 				.then(literal("숨기기").executes(c -> {
 					ModConfig.get().hudVisible = false;
@@ -55,6 +55,10 @@ public final class Commands {
 						})))
 				.then(literal("편집").executes(c -> {
 					Tracker.INSTANCE.requestEditor();
+					return 1;
+				}))
+				.then(literal("통계").executes(c -> {
+					Tracker.INSTANCE.requestStats();
 					return 1;
 				}))
 				.then(literal("진단").executes(c -> diagnose(c.getSource()))));
@@ -125,8 +129,9 @@ public final class Commands {
 		String[] lines = {
 				"[광질 측정] 명령어",
 				" /광질 설정 — 설정창 열기 (F9)",
+				" /광질 통계 — 날짜별 광질 기록 보기 (F10)",
 				" /광질 시작, /광질 끝 — 기록 직접 시작/끝내기 (F7)",
-				" /광질 초기화 — 기록 지우기 (F8 두 번)",
+				" /광질 초기화 — 집계판 숫자 초기화 (F8 두 번)",
 				" /광질 숨기기, /광질 보이기 — 집계판 숨기기/보이기 (F6)",
 				" /광질 알림 켜기, /광질 알림 끄기 — 획득 알림",
 				" /광질 편집 — 위치·크기 바꾸기",

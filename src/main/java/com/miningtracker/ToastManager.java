@@ -6,7 +6,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
-/** The "아이템 +N" pickup notifications. Newest first. */
+/** The "아이템 +N (총 N개)" pickup notifications. Newest first. */
 public final class ToastManager {
 	/** Ticks a toast stays fully visible after its last update (20 ticks = 1 second). */
 	public static final int LIFETIME = 70;
@@ -19,14 +19,17 @@ public final class ToastManager {
 		public final ItemStack icon;
 		public final String name;
 		public int amount;
+		/** How many of this item the recording has so far. */
+		public long total;
 		public long born;
 		public long updated;
 
-		Toast(String key, ItemStack icon, String name, int amount, long tick) {
+		Toast(String key, ItemStack icon, String name, int amount, long total, long tick) {
 			this.key = key;
 			this.icon = icon;
 			this.name = name;
 			this.amount = amount;
+			this.total = total;
 			this.born = tick;
 			this.updated = tick;
 		}
@@ -47,18 +50,19 @@ public final class ToastManager {
 		return toasts;
 	}
 
-	public void push(String key, ItemStack icon, String name, int amount, long tick) {
+	public void push(String key, ItemStack icon, String name, int amount, long total, long tick) {
 		for (Iterator<Toast> it = toasts.iterator(); it.hasNext(); ) {
 			Toast t = it.next();
 			if (t.key.equals(key) && tick - t.updated <= LIFETIME) {
 				it.remove();
 				t.amount += amount;
+				t.total = total;
 				t.updated = tick;
 				toasts.add(0, t);
 				return;
 			}
 		}
-		toasts.add(0, new Toast(key, icon, name, amount, tick));
+		toasts.add(0, new Toast(key, icon, name, amount, total, tick));
 		while (toasts.size() > MAX) {
 			toasts.remove(toasts.size() - 1);
 		}

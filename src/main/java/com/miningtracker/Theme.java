@@ -1,257 +1,140 @@
 package com.miningtracker;
 
+import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 
 import java.util.List;
+import java.util.Map;
 
-/** Colours and panel style shared by the board, the pickup toasts and the settings screen (설정 → 테마). */
+/**
+ * Colours shared by the board, the pickup toasts and the screens (설정 → 테마). One look in six colours: dark
+ * cards with pixel-rounded corners and a coloured accent; 흰색 is a light card, 투명 has almost no panel.
+ */
 public final class Theme {
-	enum Style { FRAME, TOOLTIP, BEVEL, FLAT }
-
 	public final String id;
 	public final String name;
-	final Style style;
-	// panel
-	int edge;
-	int border;
-	int bg;
-	int light;
-	int dark;
-	int borderTop;
-	int borderBottom;
-	/** Background of the settings screen (see-through themes get a darker one there so it stays readable). */
-	int screenBg;
-	int rule;
-	int sep;
-	// text
-	int head;
-	int text;
-	int sub;
-	int label;
-	int dim;
-	int green;
-	int yellow;
-	int plus;
-	boolean shadow = true;
-	// settings controls and item slots
-	int accent;
-	int accentEdge;
-	int accentText;
-	int control;
-	int controlEdge;
-	int controlText;
-	int hint;
-	int slot;
-	int slotDark;
-	int slotLight;
+	/** Panel background. */
+	final int bg;
+	/** Background of full screens (settings, statistics): more solid so they stay readable. */
+	final int screenBg;
+	/** 1 px line along the top edge of a panel (0 = none). */
+	final int highlight;
+	final int head;
+	final int text;
+	final int sub;
+	final int dim;
+	/** Boxes and rows inside a panel. */
+	final int card;
+	/** Background of switches and choice groups. */
+	final int track;
+	final int sep;
+	final int accent;
+	/** Text on the accent colour. */
+	final int onAccent;
+	/** How strongly the mineral bars and item slots are tinted (0-255). */
+	final int barAlpha;
+	final int slotAlpha;
+	final boolean shadow;
 
-	private Theme(String id, String name, Style style) {
+	private Theme(String id, String name, int bg, int screenBg, int highlight, int head, int text, int sub, int dim,
+			int card, int track, int sep, int accent, int onAccent, int barAlpha, int slotAlpha, boolean shadow) {
 		this.id = id;
 		this.name = name;
-		this.style = style;
+		this.bg = bg;
+		this.screenBg = screenBg;
+		this.highlight = highlight;
+		this.head = head;
+		this.text = text;
+		this.sub = sub;
+		this.dim = dim;
+		this.card = card;
+		this.track = track;
+		this.sep = sep;
+		this.accent = accent;
+		this.onAccent = onAccent;
+		this.barAlpha = barAlpha;
+		this.slotAlpha = slotAlpha;
+		this.shadow = shadow;
 	}
 
-	public static final Theme DEFAULT = new Theme("default", "기본", Style.FRAME);
-	public static final Theme VANILLA = new Theme("vanilla", "바닐라", Style.TOOLTIP);
-	public static final Theme INVENTORY = new Theme("inventory", "인벤토리", Style.BEVEL);
-	public static final Theme BLACK = new Theme("black", "검정", Style.FLAT);
-	public static final Theme CLEAR = new Theme("clear", "투명", Style.FLAT);
-	public static final List<Theme> ALL = List.of(DEFAULT, VANILLA, INVENTORY, BLACK, CLEAR);
-
-	static {
-		// 기본: the same navy panels the server uses
-		Theme t = DEFAULT;
-		t.edge = 0xFF0F0F0F;
-		t.border = 0xFF383D4A;
-		t.bg = 0xFF202326;
-		t.screenBg = t.bg;
-		t.rule = 0xFF3664BD;
-		t.sep = 0xFF30353E;
-		t.head = 0xFFFCFCFC;
-		t.text = 0xFFEBEEF2;
-		t.sub = 0xFF9DB6D5;
-		t.label = 0xFF6E9EEB;
-		t.dim = 0xFF808A98;
-		t.green = 0xFF7BC37B;
-		t.yellow = 0xFFE3C46A;
-		t.plus = 0xFF8AE28A;
-		t.accent = 0xFF3664BD;
-		t.accentEdge = 0xFF628CDE;
-		t.accentText = 0xFFFCFCFC;
-		t.control = 0xFF181A1E;
-		t.controlEdge = 0xFF383D4A;
-		t.controlText = 0xFF9DB6D5;
-		t.hint = 0xFF5F6775;
-		t.slot = 0xFF181A1E;
-		t.slotDark = 0xFF383D4A;
-		t.slotLight = 0xFF464C5C;
-
-		// 바닐라: Minecraft's item tooltip, dark with a purple border
-		t = VANILLA;
-		t.bg = 0xF0100010;
-		t.borderTop = 0x505000FF;
-		t.borderBottom = 0x5028007F;
-		t.screenBg = t.bg;
-		t.rule = 0xFF5000FF;
-		t.sep = 0xFF3C1E5A;
-		t.head = 0xFFFFFFFF;
-		t.text = 0xFFFFFFFF;
-		t.sub = 0xFFAAAAAA;
-		t.label = 0xFF55FFFF;
-		t.dim = 0xFFAAAAAA;
-		t.green = 0xFF55FF55;
-		t.yellow = 0xFFFFFF55;
-		t.plus = 0xFF55FF55;
-		t.accent = 0xFF5C2AA8;
-		t.accentEdge = 0xFF9466FF;
-		t.accentText = 0xFFFFFFFF;
-		t.control = 0xFF1C0C28;
-		t.controlEdge = 0xFF3C1E66;
-		t.controlText = 0xFFAAAAAA;
-		t.hint = 0xFF6E5A87;
-		t.slot = 0xFF1C0C28;
-		t.slotDark = 0xFF3C1E66;
-		t.slotLight = 0xFF4A2A70;
-
-		// 인벤토리: the light grey of Minecraft's inventory window, dark text without shadow
-		t = INVENTORY;
-		t.edge = 0xFF000000;
-		t.light = 0xFFFFFFFF;
-		t.dark = 0xFF555555;
-		t.bg = 0xFFC6C6C6;
-		t.screenBg = t.bg;
-		t.rule = 0xFF555555;
-		t.sep = 0xFF8B8B8B;
-		t.head = 0xFF404040;
-		t.text = 0xFF404040;
-		t.sub = 0xFF284696;
-		t.label = 0xFF284696;
-		t.dim = 0xFF6E6E6E;
-		t.green = 0xFF008000;
-		t.yellow = 0xFF9A7400;
-		t.plus = 0xFF008000;
-		t.shadow = false;
-		t.accent = 0xFF3C64C8;
-		t.accentEdge = 0xFF1E3C8C;
-		t.accentText = 0xFFFFFFFF;
-		t.control = 0xFFB4B4B4;
-		t.controlEdge = 0xFF555555;
-		t.controlText = 0xFF404040;
-		t.hint = 0xFF707070;
-		t.slot = 0xFF8B8B8B;
-		t.slotDark = 0xFF373737;
-		t.slotLight = 0xFFFFFFFF;
-
-		// 검정: plain see-through black, no border
-		t = BLACK;
-		t.bg = 0x96000000;
-		t.screenBg = 0xD8000000;
-		t.rule = 0x46FFFFFF;
-		t.sep = 0x2DFFFFFF;
-		t.head = 0xFFFFFFFF;
-		t.text = 0xFFFFFFFF;
-		t.sub = 0xFFC8C8C8;
-		t.label = 0xFFFFD666;
-		t.dim = 0xFFAAAAAA;
-		t.green = 0xFF78E678;
-		t.yellow = 0xFFFFB84D;
-		t.plus = 0xFF78E678;
-		t.accent = 0xFF3664BD;
-		t.accentEdge = 0xFF7FA6F0;
-		t.accentText = 0xFFFFFFFF;
-		t.control = 0xFF1E1E1E;
-		t.controlEdge = 0xFF505050;
-		t.controlText = 0xFFC8C8C8;
-		t.hint = 0xFF808080;
-		t.slot = 0x50000000;
-		t.slotDark = 0x40FFFFFF;
-		t.slotLight = 0x20FFFFFF;
-
-		// 투명: almost no panel, just the text
-		t = CLEAR;
-		t.bg = 0x2D000000;
-		t.screenBg = 0xC8000000;
-		t.rule = 0x3CFFFFFF;
-		t.sep = 0x28FFFFFF;
-		t.head = 0xFFFFFFFF;
-		t.text = 0xFFFFFFFF;
-		t.sub = 0xFFD2DCEB;
-		t.label = 0xFF8CBEFF;
-		t.dim = 0xFFC8C8C8;
-		t.green = 0xFF8CEB8C;
-		t.yellow = 0xFFE3C46A;
-		t.plus = 0xFF8CEB8C;
-		t.accent = 0xFF3664BD;
-		t.accentEdge = 0xFF7FA6F0;
-		t.accentText = 0xFFFFFFFF;
-		t.control = 0xFF1E1E1E;
-		t.controlEdge = 0xFF505050;
-		t.controlText = 0xFFD2DCEB;
-		t.hint = 0xFF808080;
-		t.slot = 0x40000000;
-		t.slotDark = 0x40FFFFFF;
-		t.slotLight = 0x20FFFFFF;
+	private static Theme dark(String id, String name, int bg, int highlight, int card, int accent, int onAccent) {
+		return new Theme(id, name, bg, 0xF40E1015, highlight, 0xFFFCFDFF, 0xFFEEF1F6, 0xFFAAB2C0, 0xFF808A9A,
+				card, 0x10FFFFFF, 0x12FFFFFF, accent, onAccent, 44, 40, true);
 	}
+
+	public static final Theme MINT = dark("mint", "민트", 0xE40E1015, 0x1AFFFFFF, 0x0AFFFFFF, 0xFF62D6A0, 0xFF0C1612);
+	public static final Theme BLUE = dark("blue", "파랑", 0xE40E1015, 0x1AFFFFFF, 0x0AFFFFFF, 0xFF6CA8FF, 0xFF0A1428);
+	public static final Theme PURPLE = dark("purple", "보라", 0xE40E1015, 0x1AFFFFFF, 0x0AFFFFFF, 0xFFB28EFF, 0xFF180E2C);
+	public static final Theme ORANGE = dark("orange", "주황", 0xE40E1015, 0x1AFFFFFF, 0x0AFFFFFF, 0xFFFFA65E, 0xFF2C1606);
+	public static final Theme WHITE = new Theme("white", "흰색", 0xEEF4F6F9, 0xF8F4F6F9, 0, 0xFF14181E, 0xFF1A1E26,
+			0xFF464E5C, 0xFF7A8290, 0x09000000, 0x10000000, 0x16000000, 0xFF1A926A, 0xFFFFFFFF, 70, 60, false);
+	public static final Theme CLEAR = dark("clear", "투명", 0x3C000000, 0, 0x08FFFFFF, 0xFF62D6A0, 0xFF0C1612);
+	public static final List<Theme> ALL = List.of(MINT, BLUE, PURPLE, ORANGE, WHITE, CLEAR);
+
+	/** Themes of 0.2.x, mapped to the closest new one. */
+	private static final Map<String, String> OLD_IDS = Map.of("default", "mint", "vanilla", "purple",
+			"inventory", "white", "black", "mint");
 
 	public static Theme byId(String id) {
+		String wanted = OLD_IDS.getOrDefault(id, id);
 		for (Theme t : ALL) {
-			if (t.id.equals(id)) {
+			if (t.id.equals(wanted)) {
 				return t;
 			}
 		}
-		return DEFAULT;
+		return MINT;
 	}
 
 	int index() {
 		return ALL.indexOf(this);
 	}
 
-	/** Left/right inset of lines drawn inside a panel (the bevel is thicker). */
-	int inset() {
-		return style == Style.BEVEL ? 4 : 3;
+	/** Colour of the "측정 중" mark: the accent, or grey while resting (the time is stopped). */
+	int status(boolean resting) {
+		return resting ? dim : accent;
 	}
 
-	/** Panel background. {@code screen}: for the settings screen. */
-	void frame(GuiGraphics g, int x, int y, int w, int h, boolean screen) {
-		switch (style) {
-			case FRAME -> {
-				g.fill(x, y, x + w, y + h, edge);
-				g.fill(x + 1, y + 1, x + w - 1, y + h - 1, border);
-				g.fill(x + 2, y + 2, x + w - 2, y + h - 2, bg);
-			}
-			case TOOLTIP -> {
-				// dark body with cut corners, then a purple border that fades downwards
-				g.fill(x + 1, y, x + w - 1, y + h, bg);
-				g.fill(x, y + 1, x + 1, y + h - 1, bg);
-				g.fill(x + w - 1, y + 1, x + w, y + h - 1, bg);
-				g.fillGradient(x + 1, y + 1, x + 2, y + h - 1, borderTop, borderBottom);
-				g.fillGradient(x + w - 2, y + 1, x + w - 1, y + h - 1, borderTop, borderBottom);
-				g.fill(x + 2, y + 1, x + w - 2, y + 2, borderTop);
-				g.fill(x + 2, y + h - 2, x + w - 2, y + h - 1, borderBottom);
-			}
-			case BEVEL -> {
-				g.fill(x + 1, y, x + w - 1, y + h, edge);
-				g.fill(x, y + 1, x + 1, y + h - 1, edge);
-				g.fill(x + w - 1, y + 1, x + w, y + h - 1, edge);
-				g.fill(x + 1, y + 1, x + w - 1, y + h - 1, bg);
-				g.fill(x + 1, y + 1, x + w - 2, y + 3, light);
-				g.fill(x + 1, y + 3, x + 3, y + h - 2, light);
-				g.fill(x + 2, y + h - 3, x + w - 1, y + h - 1, dark);
-				g.fill(x + w - 3, y + 2, x + w - 1, y + h - 3, dark);
-			}
-			case FLAT -> g.fill(x, y, x + w, y + h, screen ? screenBg : bg);
+	// ------------------------------------------------------------------ shapes
+
+	/** A rectangle with pixel-rounded corners. Rows never overlap, so see-through colours stay even. */
+	static void rrect(GuiGraphics g, int x, int y, int w, int h, int color, int r) {
+		if (w <= 0 || h <= 0) {
+			return;
+		}
+		r = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+		for (int i = 0; i < r; i++) {
+			int inset = r - i;
+			g.fill(x + inset, y + i, x + w - inset, y + i + 1, color);
+			g.fill(x + inset, y + h - 1 - i, x + w - inset, y + h - i, color);
+		}
+		g.fill(x, y + r, x + w, y + h - r, color);
+	}
+
+	/** A panel: rounded background and a light line along the top. {@code screen}: for a full screen. */
+	void panel(GuiGraphics g, int x, int y, int w, int h, boolean screen) {
+		rrect(g, x, y, w, h, screen ? screenBg : bg, 2);
+		if (highlight != 0) {
+			g.fill(x + 2, y, x + w - 2, y + 1, highlight);
 		}
 	}
 
-	/** An inventory-style item slot. */
-	void slot(GuiGraphics g, int x, int y, int size) {
-		g.fill(x, y, x + size - 1, y + 1, slotDark);
-		g.fill(x, y + 1, x + 1, y + size - 1, slotDark);
-		g.fill(x + size - 1, y, x + size, y + size, slotLight);
-		g.fill(x, y + size - 1, x + size - 1, y + size, slotLight);
-		g.fill(x + 1, y + 1, x + size - 1, y + size - 1, slot);
+	/** The coloured line along the left edge of the board. */
+	static void stripe(GuiGraphics g, int x, int y, int h, int color) {
+		g.fill(x, y, x + 2, y + h, color);
 	}
+
+	/** "● 측정 중" in a soft pill whose right edge is at {@code right}. Returns its left edge. */
+	int pill(GuiGraphics g, Font font, String label, int right, int y, int color) {
+		int w = font.width(label) + 15;
+		int x = right - w;
+		rrect(g, x, y - 2, w, 12, withAlpha(color, shadow ? 48 : 40), 1);
+		g.fill(x + 5, y + 3, x + 7, y + 5, color);
+		text(g, font, label, x + 10, y, color);
+		return x;
+	}
+
+	// ------------------------------------------------------------------ text
 
 	void text(GuiGraphics g, Font font, String s, int x, int y, int color) {
 		g.drawString(font, s, x, y, color, shadow);
@@ -259,6 +142,34 @@ public final class Theme {
 
 	void textRight(GuiGraphics g, Font font, String s, int right, int y, int color) {
 		g.drawString(font, s, right - font.width(s), y, color, shadow);
+	}
+
+	/** Text drawn {@code scale} times bigger (for the timer and big numbers). */
+	void big(GuiGraphics g, Font font, String s, float x, float y, float scale, int color) {
+		PoseStack pose = g.pose();
+		pose.pushPose();
+		pose.translate(x, y, 0);
+		pose.scale(scale, scale, 1f);
+		g.drawString(font, s, 0, 0, color, shadow);
+		pose.popPose();
+	}
+
+	static int bigWidth(Font font, String s, float scale) {
+		return Math.round(font.width(s) * scale);
+	}
+
+	// ------------------------------------------------------------------ colours
+
+	static int withAlpha(int rgb, int alpha) {
+		return (Math.max(0, Math.min(255, alpha)) << 24) | (rgb & 0x00FFFFFF);
+	}
+
+	/** Dark or white text, whichever reads better on {@code color}. */
+	static int readableOn(int color) {
+		int r = (color >> 16) & 0xFF;
+		int g = (color >> 8) & 0xFF;
+		int b = color & 0xFF;
+		return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? 0xFF14181E : 0xFFFFFFFF;
 	}
 
 	/** {@code a} mixed with {@code b}; {@code f} = share of b. */

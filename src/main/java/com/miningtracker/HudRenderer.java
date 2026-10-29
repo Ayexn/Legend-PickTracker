@@ -19,21 +19,29 @@ import java.util.Locale;
  *
  * <p>Layout numbers are in "panel pixels": everything is drawn inside a pose scaled by the configured
  * scale (default 2/3, which matches the size of the server's own HUD panels at GUI scale 3). Item icons
- * are the game's real item icons.
+ * are the game's real item icons. The board is a dark card with the elapsed time in big numbers; each
+ * mineral gets a bar in its own colour, as long as its share of the most picked-up mineral.
  */
 public final class HudRenderer {
-	static final int PITCH = 12;
-	static final int MIN_WIDTH = 182;
+	static final int MIN_WIDTH = 172;
 	static final int NAME_MAX = 124;
-	static final int TOAST_HEIGHT = 14;
+	/** Mineral rows (with a bar behind them) and block rows. */
+	static final int ROW = 15;
+	static final int BLOCK_ROW = 12;
+	/** Where the list starts, under the header and the big time. */
+	static final int LIST_TOP = 63;
+	static final int TOAST_HEIGHT = 24;
 	static final int TOAST_GAP = 3;
 	/** Rates (per minute / per hour) appear once this much time has been measured. */
 	static final int RATE_MIN_SECONDS = 30;
-	static final int SLOT = 22;
+	static final int SLOT = 20;
 	static final int SLOT_GAP = 2;
 	static final int SLOT_ROWS = 2;
 	static final int BAR_HEIGHT = 14;
 	static final int BAR_MAX_ITEMS = 8;
+	/** The elapsed time is drawn twice as big; "+N" in the toasts one and a half times. */
+	static final float BIG = 2f;
+	static final float MID = 1.5f;
 
 	private static ItemStack headerIcon;
 
@@ -49,6 +57,8 @@ public final class HudRenderer {
 		boolean resting;
 		long seconds;
 		long totalBlocks;
+		/** Icon of the most mined block (for the one-line board). */
+		ItemStack blockIcon = ItemStack.EMPTY;
 		final List<Row> blockRows = new ArrayList<>();
 		Row blockMore;
 		/** All minerals, most first. */
@@ -100,6 +110,9 @@ public final class HudRenderer {
 		for (Tracker.BlockTally b : blocks) {
 			p.totalBlocks += b.count;
 		}
+		if (!blocks.isEmpty()) {
+			p.blockIcon = blocks.get(0).icon;
+		}
 		int shown = Math.min(blocks.size(), cfg.maxBlockRows);
 		for (int i = 0; i < shown; i++) {
 			Tracker.BlockTally b = blocks.get(i);
@@ -142,6 +155,7 @@ public final class HudRenderer {
 		for (int i = 0; i < blocks.length; i++) {
 			p.blockRows.add(new Row(new ItemStack(blocks[i]), blocks[i].getName().getString(), counts[i], false, false));
 		}
+		p.blockIcon = new ItemStack(Blocks.DEEPSLATE);
 		p.blockMore = new Row(ItemStack.EMPTY, "외 5종", 39, true, true);
 		p.totalBlocks = 1740;
 		ItemStack[] items = {new ItemStack(Items.REDSTONE), new ItemStack(Items.RAW_IRON), new ItemStack(Items.LAPIS_LAZULI),
@@ -158,11 +172,11 @@ public final class HudRenderer {
 	static List<ToastManager.Toast> sampleToasts() {
 		List<ToastManager.Toast> list = new ArrayList<>();
 		ItemStack diamond = new ItemStack(Items.DIAMOND);
-		ItemStack iron = new ItemStack(Items.RAW_IRON);
 		ItemStack redstone = new ItemStack(Items.REDSTONE);
-		list.add(new ToastManager.Toast("a", diamond, diamond.getHoverName().getString(), 2, -1000));
-		list.add(new ToastManager.Toast("b", iron, iron.getHoverName().getString(), 8, -1000));
-		list.add(new ToastManager.Toast("c", redstone, redstone.getHoverName().getString(), 5, -1000));
+		ItemStack iron = new ItemStack(Items.RAW_IRON);
+		list.add(new ToastManager.Toast("a", diamond, diamond.getHoverName().getString(), 2, 5, -1000));
+		list.add(new ToastManager.Toast("b", redstone, redstone.getHoverName().getString(), 5, 112, -1000));
+		list.add(new ToastManager.Toast("c", iron, iron.getHoverName().getString(), 1, 47, -1000));
 		return list;
 	}
 
@@ -207,65 +221,78 @@ public final class HudRenderer {
 
 	// ------------------------------------------------------------------ layouts
 
-	/** 자세히: mined blocks by type, then minerals. */
+	/** 자세히: mined blocks by type, then minerals with their bars. */
 	static float[] drawDetail(GuiGraphics g, Font font, Panel p, ModConfig cfg, Theme t) {
 		List<Row> blockLines = new ArrayList<>(p.blockRows);
 		if (p.blockMore != null) {
 			blockLines.add(p.blockMore);
 		}
 		List<Row> itemLines = mineralLines(p, cfg.maxItemRows);
-		int nameW = 0;
-		int countW = Math.max(font.width("총 " + fmt(p.totalBlocks)), font.width("획득"));
+		int nameW = Math.max(font.width("아직 캔 블록이 없어요"), font.width("아직 먹은 광물이 없어요"));
+		int countW = Math.max(font.width("개수"), font.width("획득"));
 		for (List<Row> lines : List.of(blockLines, itemLines)) {
 			for (Row r : lines) {
 				nameW = Math.max(nameW, Math.min(NAME_MAX, font.width(r.name())));
 				countW = Math.max(countW, font.width(fmt(r.count())));
 			}
 		}
-		int w = Math.max(MIN_WIDTH, Math.max(18 + nameW + 8 + countW + 6, headerWidth(font, p)));
-		int h = 19 + PITCH * (1 + Math.max(1, blockLines.size())) + 5 + PITCH * (1 + Math.max(1, itemLines.size())) + 5;
-		int right = w - 6;
+		String blocks = fmt(p.totalBlocks);
+		String minerals = fmt(p.totalMinerals);
+		int w = Math.max(MIN_WIDTH, Math.max(20 + nameW + 8 + countW + 9,
+				Math.max(headerWidth(font), heroWidth(font, p, "캔 블록", blocks, "먹은 광물", minerals))));
+		int h = 87 + BLOCK_ROW * Math.max(1, blockLines.size()) + ROW * Math.max(1, itemLines.size());
+		int right = w - 9;
 
 		float[] rect = begin(g, cfg.panelX, cfg.panelY, cfg.panelScale, w, h);
-		t.frame(g, 0, 0, w, h, false);
-		header(g, font, p, t, w);
-		int y = 19;
-		t.text(g, font, "캔 블록", 6, y + 2, t.label);
-		t.textRight(g, font, "총 " + fmt(p.totalBlocks), right, y + 2, t.text);
-		y += PITCH;
+		board(g, font, p, t, w, h);
+		hero(g, font, p, t, w, "캔 블록", blocks, t.text, "먹은 광물", minerals, t.text);
+		int y = 50;
+		t.text(g, font, "캔 블록", 8, y, t.sub);
+		t.textRight(g, font, "개수", right, y, t.dim);
+		y += 13;
 		if (blockLines.isEmpty()) {
-			t.text(g, font, "아직 캔 블록이 없어요", 18, y + 2, t.dim);
-			y += PITCH;
+			t.text(g, font, "아직 캔 블록이 없어요", 20, y, t.dim);
+			y += BLOCK_ROW;
 		}
 		for (Row r : blockLines) {
-			listRow(g, font, t, r, NAME_MAX, right, 0, null, y);
-			y += PITCH;
+			if (r.dots()) {
+				dots(g, t, 10, y + 5);
+			} else {
+				icon(g, r.icon(), 9, y);
+			}
+			int color = r.dim() ? t.dim : t.text;
+			t.text(g, font, ellipsize(font, r.name(), right - countW - 8 - 20), 20, y, color);
+			t.textRight(g, font, fmt(r.count()), right, y, color);
+			y += BLOCK_ROW;
 		}
-		g.fill(5, y + 1, w - 5, y + 2, t.sep);
-		y += 5;
-		t.text(g, font, "먹은 광물", 6, y + 2, t.label);
-		t.textRight(g, font, "획득", right, y + 2, t.dim);
-		y += PITCH;
+		g.fill(8, y + 2, w - 8, y + 3, t.sep);
+		y += 7;
+		t.text(g, font, "먹은 광물", 8, y, t.sub);
+		t.textRight(g, font, "획득", right, y, t.dim);
+		y += 15;
 		if (itemLines.isEmpty()) {
-			t.text(g, font, "아직 먹은 광물이 없어요", 18, y + 2, t.dim);
+			t.text(g, font, "아직 먹은 광물이 없어요", 20, y, t.dim);
 		}
+		long top = topCount(itemLines);
 		for (Row r : itemLines) {
-			listRow(g, font, t, r, NAME_MAX, right, 0, null, y);
-			y += PITCH;
+			mineralRow(g, font, t, r, top, w, right, 0, null, right - countW - 8 - 20, y);
+			y += ROW;
 		}
 		g.pose().popPose();
 		return rect;
 	}
 
-	/** 슬림: mined blocks in one line, minerals with a per-hour column. */
+	/** 슬림: the blocks in the header, minerals with a per-hour column. */
 	static float[] drawSlim(GuiGraphics g, Font font, Panel p, ModConfig cfg, Theme t) {
 		List<Row> lines = mineralLines(p, cfg.maxItemRows);
 		boolean rates = p.seconds >= RATE_MIN_SECONDS;
-		String blockRate = "분당 " + (rates ? fmt(perMinute(p.totalBlocks, p.seconds)) : "-");
+		String blocks = fmt(p.totalBlocks);
+		String blockRate = rates ? fmt(perMinute(p.totalBlocks, p.seconds)) : "-";
+		String itemRate = "시간당 " + (rates ? fmt(perHour(p.totalMinerals, p.seconds)) : "-");
 		List<String> lineRates = new ArrayList<>();
-		int countW = Math.max(font.width("획득"), font.width(fmt(p.totalBlocks)));
-		int rateW = Math.max(font.width("시간당"), font.width(blockRate));
-		int nameW = 0;
+		int countW = 0;
+		int rateW = font.width("0000");
+		int nameW = font.width("아직 먹은 광물이 없어요");
 		for (Row r : lines) {
 			String rate = rates ? fmt(perHour(r.count(), p.seconds)) : "-";
 			lineRates.add(rate);
@@ -273,86 +300,70 @@ public final class HudRenderer {
 			rateW = Math.max(rateW, font.width(rate));
 			nameW = Math.max(nameW, Math.min(NAME_MAX, font.width(r.name())));
 		}
-		int w = Math.max(MIN_WIDTH, Math.max(18 + nameW + 8 + countW + 8 + rateW + 6, headerWidth(font, p)));
-		int h = 19 + PITCH + 5 + PITCH + PITCH * Math.max(1, lines.size()) + 5;
-		int rateR = w - 6;
+		int w = Math.max(MIN_WIDTH, Math.max(20 + nameW + 8 + countW + 8 + rateW + 9,
+				Math.max(Math.max(headerWidth(font), heroWidth(font, p, "캔 블록", blocks, "분당", blockRate)),
+						sectionWidth(font, p, itemRate))));
+		int h = LIST_TOP + ROW * Math.max(1, lines.size()) + 2;
+		int rateR = w - 9;
 		int countR = rateR - rateW - 8;
-		int nameMax = countR - countW - 8 - 18;
 
 		float[] rect = begin(g, cfg.panelX, cfg.panelY, cfg.panelScale, w, h);
-		t.frame(g, 0, 0, w, h, false);
-		header(g, font, p, t, w);
-		int y = 19;
-		t.text(g, font, "캔 블록", 6, y + 2, t.label);
-		t.textRight(g, font, fmt(p.totalBlocks), countR, y + 2, t.text);
-		t.textRight(g, font, blockRate, rateR, y + 2, t.dim);
-		y += PITCH;
-		g.fill(5, y + 1, w - 5, y + 2, t.sep);
-		y += 5;
-		t.text(g, font, "먹은 광물", 6, y + 2, t.label);
-		t.textRight(g, font, "획득", countR, y + 2, t.dim);
-		t.textRight(g, font, "시간당", rateR, y + 2, t.dim);
-		y += PITCH;
+		board(g, font, p, t, w, h);
+		hero(g, font, p, t, w, "캔 블록", blocks, t.text, "분당", blockRate, t.accent);
+		section(g, font, p, t, w, itemRate);
+		int y = LIST_TOP;
 		if (lines.isEmpty()) {
-			t.text(g, font, "아직 먹은 광물이 없어요", 18, y + 2, t.dim);
+			t.text(g, font, "아직 먹은 광물이 없어요", 20, y, t.dim);
 		}
+		long top = topCount(lines);
 		for (int i = 0; i < lines.size(); i++) {
-			listRow(g, font, t, lines.get(i), nameMax, countR, rateR, lineRates.get(i), y);
-			y += PITCH;
+			mineralRow(g, font, t, lines.get(i), top, w, countR, rateR, lineRates.get(i), countR - countW - 8 - 20, y);
+			y += ROW;
 		}
 		g.pose().popPose();
 		return rect;
 	}
 
-	/** 아이콘: totals on two lines, minerals as inventory-style slots. */
+	/** 아이콘: the totals, then the minerals as tinted slots with their counts. */
 	static float[] drawIcons(GuiGraphics g, Font font, Panel p, ModConfig cfg, Theme t) {
 		boolean rates = p.seconds >= RATE_MIN_SECONDS;
-		String blockRate = "분당 " + (rates ? fmt(perMinute(p.totalBlocks, p.seconds)) : "-");
+		String blocks = fmt(p.totalBlocks);
+		String blockRate = rates ? fmt(perMinute(p.totalBlocks, p.seconds)) : "-";
 		String itemRate = "시간당 " + (rates ? fmt(perHour(p.totalMinerals, p.seconds)) : "-");
-		int line1 = 6 + font.width("캔 블록") + 4 + font.width(fmt(p.totalBlocks)) + 10 + font.width(blockRate) + 6;
-		int line2 = 6 + font.width("먹은 광물") + 4 + font.width(fmt(p.totalMinerals)) + 10 + font.width(itemRate) + 6;
-		int w = Math.max(MIN_WIDTH, Math.max(headerWidth(font, p), Math.max(line1, line2)));
-		int perRow = Math.max(1, (w - 12 + SLOT_GAP) / (SLOT + SLOT_GAP));
+		int w = Math.max(MIN_WIDTH, Math.max(Math.max(headerWidth(font), heroWidth(font, p, "캔 블록", blocks, "분당", blockRate)),
+				sectionWidth(font, p, itemRate)));
+		int perRow = Math.max(1, (w - 16 + SLOT_GAP) / (SLOT + SLOT_GAP));
 		List<Row> slots = slotRows(p, perRow * SLOT_ROWS);
 		int rows = Math.max(1, (slots.size() + perRow - 1) / perRow);
-		int gridTop = 19 + PITCH + PITCH + 1;
-		int h = gridTop + rows * (SLOT + SLOT_GAP) - SLOT_GAP + 6;
+		int h = LIST_TOP + rows * (SLOT + SLOT_GAP) - SLOT_GAP + 8;
 
 		float[] rect = begin(g, cfg.panelX, cfg.panelY, cfg.panelScale, w, h);
-		t.frame(g, 0, 0, w, h, false);
-		header(g, font, p, t, w);
-		int y = 19;
-		t.text(g, font, "캔 블록", 6, y + 2, t.label);
-		t.text(g, font, fmt(p.totalBlocks), 6 + font.width("캔 블록") + 4, y + 2, t.text);
-		t.textRight(g, font, blockRate, w - 6, y + 2, t.dim);
-		y += PITCH;
-		t.text(g, font, "먹은 광물", 6, y + 2, t.label);
-		t.text(g, font, fmt(p.totalMinerals), 6 + font.width("먹은 광물") + 4, y + 2, t.text);
-		t.textRight(g, font, itemRate, w - 6, y + 2, t.dim);
+		board(g, font, p, t, w, h);
+		hero(g, font, p, t, w, "캔 블록", blocks, t.text, "분당", blockRate, t.accent);
+		section(g, font, p, t, w, itemRate);
 		if (slots.isEmpty()) {
-			t.text(g, font, "아직 먹은 광물이 없어요", 6, gridTop + 7, t.dim);
+			t.text(g, font, "아직 먹은 광물이 없어요", 8, LIST_TOP + 6, t.dim);
 		}
+		int inRow = Math.min(perRow, slots.size());
+		int x0 = (w - (inRow * SLOT + (inRow - 1) * SLOT_GAP)) / 2;
 		PoseStack pose = g.pose();
 		for (int i = 0; i < slots.size(); i++) {
 			Row r = slots.get(i);
-			int sx = 6 + (i % perRow) * (SLOT + SLOT_GAP);
-			int sy = gridTop + (i / perRow) * (SLOT + SLOT_GAP);
-			t.slot(g, sx, sy, SLOT);
+			int sx = x0 + (i % perRow) * (SLOT + SLOT_GAP);
+			int sy = LIST_TOP + (i / perRow) * (SLOT + SLOT_GAP);
+			int tint = r.dim() || r.dots() ? Palette.OTHER : Palette.of(r.icon());
+			Theme.rrect(g, sx, sy, SLOT, SLOT, Theme.withAlpha(tint, t.slotAlpha), 1);
+			g.fill(sx + 1, sy + SLOT - 1, sx + SLOT - 1, sy + SLOT, Theme.withAlpha(tint, 200));
 			if (r.dots()) {
-				for (int d = 0; d < 3; d++) {
-					g.fill(sx + 5 + d * 5, sy + 8, sx + 7 + d * 5, sy + 10, t.dim);
-				}
+				dots(g, t, sx + 6, sy + 8);
 			} else if (!r.icon().isEmpty()) {
-				g.renderItem(r.icon(), sx + 3, sy + 3);
+				g.renderItem(r.icon(), sx + 2, sy + 1);
 			}
 			// above the item, like the game's own stack counts
 			pose.pushPose();
 			pose.translate(0, 0, 200);
-			if (r.dim() && !r.dots()) {
-				g.fill(sx + 1, sy + 1, sx + SLOT - 1, sy + SLOT - 1, 0x70000000);
-			}
 			String count = slotCount(r.count());
-			g.drawString(font, count, sx + SLOT - 2 - font.width(count), sy + SLOT - 10, r.dim() ? 0xFFAAAAAA : 0xFFFFFFFF, true);
+			g.drawString(font, count, sx + SLOT - 1 - font.width(count), sy + SLOT - 9, r.dim() ? 0xFFAAAAAA : 0xFFFFFFFF, true);
 			pose.popPose();
 		}
 		pose.popPose();
@@ -365,7 +376,8 @@ public final class HudRenderer {
 		float scale = cfg.barScale;
 		float center = cfg.barCenterX < 0 ? g.guiWidth() / 2f : cfg.barCenterX;
 		float[] rect = begin(g, center - w * scale / 2f, cfg.barY, scale, w, BAR_HEIGHT);
-		t.frame(g, 0, 0, w, BAR_HEIGHT, false);
+		t.panel(g, 0, 0, w, BAR_HEIGHT, false);
+		Theme.stripe(g, 0, 3, BAR_HEIGHT - 6, t.status(p.resting));
 		bar(g, font, p, t);
 		g.pose().popPose();
 		return rect;
@@ -373,19 +385,20 @@ public final class HudRenderer {
 
 	/** Lays out the one-line board and draws it when {@code g} is not null. Returns its width. */
 	private static int bar(GuiGraphics g, Font font, Panel p, Theme t) {
-		int x = 5;
+		int x = 7;
 		if (g != null) {
 			icon(g, headerIcon(), x, 3);
 		}
 		x += 10;
-		x = barText(g, font, t, p.time, x, t.sub) + 4;
-		if (g != null) {
-			g.fill(x, 5, x + 4, 9, p.resting ? t.yellow : t.green);
-		}
-		x += 8;
+		x = barText(g, font, t, p.time, x, p.resting ? t.dim : t.text) + 6;
 		x = barSep(g, t, x);
-		x = barText(g, font, t, "블록", x, t.label) + 3;
-		x = barText(g, font, t, fmt(p.totalBlocks), x, t.text) + 2;
+		if (!p.blockIcon.isEmpty()) {
+			if (g != null) {
+				icon(g, p.blockIcon, x, 3);
+			}
+			x += 10;
+		}
+		x = barText(g, font, t, fmt(p.totalBlocks), x, t.text) + 6;
 		x = barSep(g, t, x);
 		int shown = Math.min(p.minerals.size(), BAR_MAX_ITEMS);
 		for (int i = 0; i < shown; i++) {
@@ -403,10 +416,11 @@ public final class HudRenderer {
 			x = barText(g, font, t, "아직 없음", x, t.dim) + 6;
 		}
 		if (p.otherRow != null) {
-			x = barSep(g, t, x - 4);
-			x = barText(g, font, t, "기타 " + fmt(p.otherRow.count()), x, t.dim) + 6;
+			x = barSep(g, t, x);
+			x = barText(g, font, t, "기타", x, t.dim) + 4;
+			x = barText(g, font, t, fmt(p.otherRow.count()), x, t.dim) + 6;
 		}
-		return x - 1;
+		return x + 2;
 	}
 
 	private static int barText(GuiGraphics g, Font font, Theme t, String s, int x, int color) {
@@ -418,7 +432,7 @@ public final class HudRenderer {
 
 	private static int barSep(GuiGraphics g, Theme t, int x) {
 		if (g != null) {
-			g.fill(x + 2, 3, x + 3, 11, (t.dim & 0x00FFFFFF) | 0x99000000);
+			g.fill(x - 1, 3, x, BAR_HEIGHT - 3, t.sep);
 		}
 		return x + 7;
 	}
@@ -436,40 +450,89 @@ public final class HudRenderer {
 		return new float[]{x, y, w * scale, h * scale};
 	}
 
-	private static int headerWidth(Font font, Panel p) {
-		int status = 8 + Math.max(font.width("측정 중"), font.width("쉬는 중")) + 4 + font.width(p.time);
-		return 18 + font.width("광질 측정") + 12 + status + 6;
+	private static int headerWidth(Font font) {
+		int pill = Math.max(font.width("측정 중"), font.width("쉬는 중")) + 15;
+		return 19 + font.width("광질 측정") + 10 + pill + 7;
 	}
 
-	/** Icon, title, state and measured time, then the coloured rule. */
-	private static void header(GuiGraphics g, Font font, Panel p, Theme t, int w) {
-		icon(g, headerIcon(), 6, 4);
-		t.text(g, font, "광질 측정", 18, 4, t.head);
-		int hx = w - 6;
-		t.textRight(g, font, p.time, hx, 4, t.sub);
-		hx -= font.width(p.time) + 4;
-		String status = p.resting ? "쉬는 중" : "측정 중";
-		int color = p.resting ? t.yellow : t.green;
-		t.textRight(g, font, status, hx, 4, color);
-		hx -= font.width(status) + 4;
-		g.fill(hx - 4, 6, hx, 10, color);
-		g.fill(t.inset(), 15, w - t.inset(), 16, t.rule);
+	private static int heroLabelX(Font font, Panel p) {
+		return Math.max(76, 8 + Theme.bigWidth(font, p.time, BIG) + 12);
 	}
 
-	/** A list line: icon (or dots), name, count, and optionally a rate in its own column. */
-	private static void listRow(GuiGraphics g, Font font, Theme t, Row r, int nameMax, int countR, int rateR, String rate, int y) {
+	private static int heroWidth(Font font, Panel p, String l1, String v1, String l2, String v2) {
+		return heroLabelX(font, p) + Math.max(font.width(l1), font.width(l2)) + 8 + Math.max(font.width(v1), font.width(v2)) + 8;
+	}
+
+	private static int sectionWidth(Font font, Panel p, String rate) {
+		return 8 + font.width("먹은 광물") + 4 + font.width(fmt(p.totalMinerals)) + 12 + font.width(rate) + 8;
+	}
+
+	/** The card, the status stripe on the left, and the header line. */
+	private static void board(GuiGraphics g, Font font, Panel p, Theme t, int w, int h) {
+		t.panel(g, 0, 0, w, h, false);
+		Theme.stripe(g, 0, 5, h - 10, t.status(p.resting));
+		icon(g, headerIcon(), 8, 5);
+		t.text(g, font, "광질 측정", 19, 5, t.sub);
+		t.pill(g, font, p.resting ? "쉬는 중" : "측정 중", w - 7, 5, t.status(p.resting));
+	}
+
+	/** The elapsed time in big numbers, two totals beside it, and a thin line under them. */
+	private static void hero(GuiGraphics g, Font font, Panel p, Theme t, int w,
+			String l1, String v1, int c1, String l2, String v2, int c2) {
+		t.big(g, font, p.time, 8, 20, BIG, p.resting ? t.dim : t.head);
+		int lx = heroLabelX(font, p);
+		t.text(g, font, l1, lx, 20, t.dim);
+		t.textRight(g, font, v1, w - 8, 20, c1);
+		t.text(g, font, l2, lx, 32, t.dim);
+		t.textRight(g, font, v2, w - 8, 32, c2);
+		g.fill(8, 45, w - 8, 46, t.sep);
+	}
+
+	/** "먹은 광물 241 ............ 시간당 1,151" */
+	private static void section(GuiGraphics g, Font font, Panel p, Theme t, int w, String rate) {
+		int x = 8 + font.width("먹은 광물") + 4;
+		t.text(g, font, "먹은 광물", 8, 50, t.sub);
+		t.text(g, font, fmt(p.totalMinerals), x, 50, t.text);
+		t.textRight(g, font, rate, w - 8, 50, t.dim);
+	}
+
+	/** A mineral line: a bar in the mineral's colour behind it, icon, name, count and maybe a rate. */
+	private static void mineralRow(GuiGraphics g, Font font, Theme t, Row r, long top, int w, int countR, int rateR,
+			String rate, int nameMax, int y) {
+		if (!r.dim() && !r.dots() && top > 0) {
+			int color = Palette.of(r.icon());
+			int x0 = 5;
+			int fill = x0 + Math.max(4, (int) Math.round((w - 10) * (double) r.count() / top));
+			Theme.rrect(g, x0, y - 3, fill - x0, 13, Theme.withAlpha(color, t.barAlpha), 1);
+			g.fill(x0, y - 2, x0 + 1, y + 9, color);
+		}
 		if (r.dots()) {
-			g.fill(6, y + 7, 7, y + 8, t.dim);
-			g.fill(9, y + 7, 10, y + 8, t.dim);
-			g.fill(12, y + 7, 13, y + 8, t.dim);
+			dots(g, t, 10, y + 5);
 		} else {
-			icon(g, r.icon(), 6, y + 2);
+			icon(g, r.icon(), 9, y);
 		}
 		int color = r.dim() ? t.dim : t.text;
-		t.text(g, font, ellipsize(font, r.name(), nameMax), 18, y + 2, color);
-		t.textRight(g, font, fmt(r.count()), countR, y + 2, color);
+		t.text(g, font, ellipsize(font, r.name(), nameMax), 20, y, color);
+		t.textRight(g, font, fmt(r.count()), countR, y, color);
 		if (rate != null) {
-			t.textRight(g, font, rate, rateR, y + 2, r.dim() ? t.dim : t.sub);
+			t.textRight(g, font, rate, rateR, y, t.dim);
+		}
+	}
+
+	private static long topCount(List<Row> rows) {
+		long top = 0;
+		for (Row r : rows) {
+			if (!r.dim() && !r.dots()) {
+				top = Math.max(top, r.count());
+			}
+		}
+		return top;
+	}
+
+	/** "…" for "외 N종": three small dots. */
+	private static void dots(GuiGraphics g, Theme t, int x, int y) {
+		for (int i = 0; i < 3; i++) {
+			g.fill(x + i * 3, y, x + i * 3 + 1, y + 1, t.dim);
 		}
 	}
 
@@ -528,9 +591,11 @@ public final class HudRenderer {
 
 	private static int toastWidth(Font font, ToastManager.Toast t) {
 		String name = ellipsize(font, t.name, NAME_MAX);
-		return 16 + font.width(name) + 4 + font.width("+" + fmt(t.amount)) + 5;
+		int line2 = Theme.bigWidth(font, "+" + fmt(t.amount), MID) + 4 + font.width("총 " + fmt(t.total) + "개");
+		return 24 + Math.max(font.width(name), line2) + 8;
 	}
 
+	/** Name on top; "+N" big in the accent colour with the running total beside it. */
 	private static void drawToast(GuiGraphics g, Font font, Theme theme, ToastManager.Toast t, float x, float y) {
 		String name = ellipsize(font, t.name, NAME_MAX);
 		String plus = "+" + fmt(t.amount);
@@ -538,10 +603,12 @@ public final class HudRenderer {
 		PoseStack pose = g.pose();
 		pose.pushPose();
 		pose.translate(x, y, 0);
-		theme.frame(g, 0, 0, w, TOAST_HEIGHT, false);
-		icon(g, t.icon, 4, 3);
-		theme.text(g, font, name, 16, 3, theme.text);
-		theme.text(g, font, plus, 16 + font.width(name) + 4, 3, theme.plus);
+		theme.panel(g, 0, 0, w, TOAST_HEIGHT, false);
+		Theme.rrect(g, 3, 3, 18, 18, Theme.withAlpha(Palette.of(t.icon), 56), 1);
+		icon(g, t.icon, 8, 8);
+		theme.text(g, font, name, 24, 3, theme.text);
+		theme.big(g, font, plus, 24, 12, MID, theme.accent);
+		theme.text(g, font, "총 " + fmt(t.total) + "개", 24 + Theme.bigWidth(font, plus, MID) + 4, 14, theme.dim);
 		pose.popPose();
 	}
 

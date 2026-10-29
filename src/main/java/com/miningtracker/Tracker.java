@@ -279,6 +279,29 @@ public final class Tracker {
 		}
 	}
 
+	/** What this recording added (for the statistics): kept apart from the board, which may continue from before. */
+	private static final class SessionLog {
+		final long start = System.currentTimeMillis();
+		long ticks;
+		long blocks;
+		long other;
+		final Map<String, History.Item> items = new LinkedHashMap<>();
+
+		boolean isEmpty() {
+			return blocks <= 0 && other <= 0 && items.isEmpty();
+		}
+
+		History.Session toSession() {
+			History.Session s = new History.Session();
+			s.start = start;
+			s.seconds = ticks / 20;
+			s.blocks = Math.max(0, blocks);
+			s.other = other;
+			s.items = new ArrayList<>(items.values());
+			return s;
+		}
+	}
+
 	public final Stats stats = new Stats();
 	public final ToastManager toasts = new ToastManager();
 
@@ -293,6 +316,7 @@ public final class Tracker {
 	private List<BlockTally> sortedBlocks = new ArrayList<>();
 	private List<ItemTally> sortedItems = new ArrayList<>();
 	private boolean dirty;
+	private SessionLog session;
 
 	// ---- bookkeeping ----
 	private ClientLevel lastLevel;
@@ -310,6 +334,7 @@ public final class Tracker {
 	private long resetArmedAt = Long.MIN_VALUE / 2;
 	private boolean openSettingsNextTick;
 	private boolean openEditorNextTick;
+	private boolean openStatsNextTick;
 
 	private Tracker() {
 	}
@@ -390,6 +415,7 @@ public final class Tracker {
 		recording = true;
 		manualSession = manual;
 		lastMineTick = tick;
+		session = new SessionLog();
 		primaryChecks.clear();
 		watches.clear();
 		candidates.clear();
@@ -400,11 +426,27 @@ public final class Tracker {
 			return;
 		}
 		recording = false;
+		saveSession();
 		primaryChecks.clear();
 		watches.clear();
 		candidates.clear();
 		if (summary && ModConfig.get().chatSummary) {
 			postSummary(mc);
+		}
+	}
+
+	/** Adds this recording to the saved history (광질 통계), if anything was counted. */
+	private void saveSession() {
+		if (session != null && !session.isEmpty()) {
+			History.add(session.toSession());
+		}
+		session = null;
+	}
+
+	/** The game is closing: keep what the running recording has so far. */
+	public void onClientStopping() {
+		if (recording) {
+			saveSession();
 		}
 	}
 
@@ -418,12 +460,19 @@ public final class Tracker {
 		}
 	}
 
-	/** Clears the counts but keeps recording if a recording is running. */
+	/**
+	 * Clears the counts but keeps recording if a recording is running. What was mined until now stays in the
+	 * statistics (as its own recording); only the board starts over.
+	 */
 	public void clearTallies() {
 		blocks.clear();
 		items.clear();
 		toasts.clear();
 		activeTicks = 0;
+		if (recording) {
+			saveSession();
+			session = new SessionLog();
+		}
 		stats.packetPickups = 0;
 		stats.latePacketPickups = 0;
 		stats.fallbackPickups = 0;
@@ -446,6 +495,10 @@ public final class Tracker {
 
 	public void requestEditor() {
 		openEditorNextTick = true;
+	}
+
+	public void requestStats() {
+		openStatsNextTick = true;
 	}
 
 	static void notify(Minecraft mc, String message) {
@@ -480,6 +533,12 @@ public final class Tracker {
 				mc.setScreen(new EditHudScreen(null));
 			}
 		}
+		if (openStatsNextTick) {
+			openStatsNextTick = false;
+			if (mc.screen == null) {
+				mc.setScreen(new StatsScreen(null));
+			}
+		}
 
 		ModConfig cfg = ModConfig.get();
 		if (recording) {
@@ -489,6 +548,9 @@ public final class Tracker {
 			} else if (mc.level != null && !mc.isPaused()
 					&& (!cfg.autoMode || tick - lastMineTick <= ACTIVE_GRACE_TICKS)) {
 				activeTicks++;
+				if (session != null) {
+					session.ticks++;
+				}
 			}
 		}
 
@@ -522,6 +584,8 @@ public final class Tracker {
 
 	public void onDisconnect() {
 		resolveCandidates(true);
+		// leaving the server ends the recording, so it is saved to the statistics
+		stopRecording(Minecraft.getInstance(), false);
 		clearWorldState();
 		lastLevel = null;
 	}
@@ -559,15 +623,20 @@ public final class Tracker {
 			if (tick - resetArmedAt <= RESET_CONFIRM_TICKS) {
 				clearTallies();
 				resetArmedAt = Long.MIN_VALUE / 2;
-				notify(mc, "광질 측정: 기록을 초기화했어요");
+				notify(mc, "광질 측정: 집계판을 초기화했어요 (지금까지 캔 건 광질 통계에 남아요)");
 			} else {
 				resetArmedAt = tick;
-				notify(mc, "광질 측정: 3초 안에 한 번 더 누르면 기록을 초기화해요");
+				notify(mc, "광질 측정: 3초 안에 한 번 더 누르면 집계판을 초기화해요");
 			}
 		}
 		while (Keys.edit.consumeClick()) {
 			if (mc.screen == null) {
 				mc.setScreen(new SettingsScreen(null));
+			}
+		}
+		while (Keys.stats.consumeClick()) {
+			if (mc.screen == null) {
+				mc.setScreen(new StatsScreen(null));
 			}
 		}
 	}
@@ -724,6 +793,9 @@ public final class Tracker {
 	}
 
 	private void addBlock(Block block, int delta) {
+		if (session != null) {
+			session.blocks += delta;
+		}
 		BlockTally t = blocks.get(block);
 		if (t == null) {
 			if (delta <= 0) {
@@ -1095,8 +1167,22 @@ public final class Tracker {
 		}
 		t.count += amount;
 		dirty = true;
+		if (session != null) {
+			if (t.other) {
+				session.other += amount;
+			} else {
+				History.Item it = session.items.get(key);
+				if (it == null) {
+					it = new History.Item();
+					it.id = BuiltInRegistries.ITEM.getKey(proto.getItem()).toString();
+					it.name = t.name;
+					session.items.put(key, it);
+				}
+				it.count += amount;
+			}
+		}
 		if (!t.other || ModConfig.get().toastOthers) {
-			toasts.push(key, t.icon, t.name, amount, tick);
+			toasts.push(key, t.icon, t.name, amount, t.count, tick);
 		}
 	}
 

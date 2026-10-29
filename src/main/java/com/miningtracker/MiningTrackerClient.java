@@ -3,6 +3,7 @@ package com.miningtracker;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientEntityEvents;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
@@ -18,6 +19,7 @@ public final class MiningTrackerClient implements ClientModInitializer {
 	@SuppressWarnings("deprecation") // HudRenderCallback still works on 1.21.4 and is the simplest hook
 	public void onInitializeClient() {
 		ModConfig.load();
+		History.load();
 		Keys.register();
 
 		Tracker tracker = Tracker.INSTANCE;
@@ -25,6 +27,7 @@ public final class MiningTrackerClient implements ClientModInitializer {
 		ClientPlayerBlockBreakEvents.AFTER.register(tracker::onBlockBroken);
 		ClientEntityEvents.ENTITY_UNLOAD.register(tracker::onEntityUnload);
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> tracker.onDisconnect());
+		ClientLifecycleEvents.CLIENT_STOPPING.register(client -> tracker.onClientStopping());
 		HudRenderCallback.EVENT.register(HudRenderer::onHudRender);
 		ClientCommandRegistrationCallback.EVENT.register(Commands::register);
 

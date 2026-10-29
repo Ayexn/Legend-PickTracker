@@ -13,6 +13,7 @@ public final class Keys {
 	public static KeyMapping pause;
 	public static KeyMapping reset;
 	public static KeyMapping edit;
+	public static KeyMapping stats;
 
 	private Keys() {
 	}
@@ -26,5 +27,7 @@ public final class Keys {
 				"key.mining-tracker.reset", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F8, CATEGORY));
 		edit = KeyBindingHelper.registerKeyBinding(new KeyMapping(
 				"key.mining-tracker.edit", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F9, CATEGORY));
+		stats = KeyBindingHelper.registerKeyBinding(new KeyMapping(
+				"key.mining-tracker.stats", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F10, CATEGORY));
 	}
 }
