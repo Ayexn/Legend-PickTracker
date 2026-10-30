@@ -25,8 +25,9 @@ public final class Commands {
 					return 1;
 				}))
 				.then(literal("시작").executes(c -> start(c.getSource())))
+				.then(literal("종료").executes(c -> stop(c.getSource())))
+				// the old names (0.1.1 "일시정지", up to 0.5.1 "끝") keep working
 				.then(literal("끝").executes(c -> stop(c.getSource())))
-				// 0.1.1 had "일시정지": keep it working, it now ends the recording
 				.then(literal("일시정지").executes(c -> stop(c.getSource())))
 				.then(literal("초기화").executes(c -> {
 					Tracker.INSTANCE.clearTallies();
@@ -68,13 +69,13 @@ public final class Commands {
 	private static int start(FabricClientCommandSource source) {
 		Tracker tracker = Tracker.INSTANCE;
 		if (tracker.isRecording()) {
-			return reply(source, "이미 기록 중이에요. 끝내기: /광질 끝");
+			return reply(source, "이미 기록 중이에요. 끝내기: /광질 종료");
 		}
 		tracker.startRecording(true);
 		ModConfig cfg = ModConfig.get();
 		return reply(source, cfg.autoMode
 				? "기록을 시작했어요. " + Tracker.formatSeconds(cfg.endAfterSeconds) + " 동안 안 캐면 끝나요."
-				: "기록을 시작했어요. 끝내기: /광질 끝 (또는 F7)");
+				: "기록을 시작했어요. 끝내기: /광질 종료 (또는 F7)");
 	}
 
 	private static int stop(FabricClientCommandSource source) {
@@ -107,16 +108,17 @@ public final class Commands {
 					? " 채널: 보스바에서 못 찾음 → 월드 이름으로 판단 (" + Tracker.dimensionId(level) + ", "
 							+ (Tracker.isWildWorld(level) ? "야생으로 봐요)" : "야생 아님)")
 					: " 채널(보스바): " + channel + (Tracker.isWildWorld(level) ? " (야생으로 봐요)" : " (야생 아님)"));
-			lines.add(" 이곳 자동 기록: " + (Tracker.isAutoPlace(level) ? "켜짐" : "꺼짐") + " · 위치 키: " + Tracker.placeKey(level));
+			lines.add(" 이곳 자동 기록: " + (Tracker.isAutoPlace(level) ? "켜짐 (야생)" : "꺼짐 (야생 아님)"));
 		}
 		Tracker.Stats s = tracker.stats;
 		lines.add(" 세는 방식: 저장소 알림" + (cfg.countInventory ? " + 인벤토리" : " (인벤토리는 설정에서 꺼짐)"));
 		lines.add(" 저장소 알림으로 센 획득: " + s.storageNotices + "번 (" + s.storageItems + "개)"
+				+ (s.storageFromScreen > 0 ? " · 그중 화면 글자로 읽은 것 " + s.storageFromScreen + "번" : "")
 				+ (s.storageRepeats > 0 ? " · 같은 알림이라 뺀 것 " + s.storageRepeats + "번" : "")
 				+ (s.storageNotRecording > 0 ? " · 기록 중이 아니거나 야생이 아니라 뺀 것 " + s.storageNotRecording + "번" : ""));
-		if (s.storageGap > 0 || s.storageUnknown > 0 || s.withdrawals > 0) {
-			lines.add(" 저장소 개수가 알림보다 더 늘어난 것: " + s.storageGap + "개 (안 셈) · 이름을 몰라 종이로 센 것: "
-					+ s.storageUnknown + "번 · 인출: " + s.withdrawals + "번");
+		if (s.storageGapFilled > 0 || s.storageGap > 0 || s.storageUnknown > 0 || s.withdrawals > 0) {
+			lines.add(" 놓친 알림으로 채운 것: " + s.storageGapFilled + "개 · 저장소가 더 늘었지만 안 센 것: " + s.storageGap
+					+ "개 · 이름을 몰라 종이로 센 것: " + s.storageUnknown + "번 · 인출: " + s.withdrawals + "번");
 		}
 		InventoryWatch inv = tracker.inventoryWatch();
 		lines.add(" 인벤토리로 바로 들어온 걸로 센 획득: " + inv.counted + "번 (" + inv.countedItems + "개)"
@@ -159,7 +161,7 @@ public final class Commands {
 				"[광질 측정] 명령어",
 				" /광질 설정 — 설정창 열기 (F9)",
 				" /광질 통계 — 날짜별 광질 기록 보기 (F10)",
-				" /광질 시작, /광질 끝 — 기록 직접 시작/끝내기 (F7)",
+				" /광질 시작, /광질 종료 — 기록 직접 시작/끝내기 (F7)",
 				" /광질 초기화 — 집계판 숫자 초기화 (F8 두 번)",
 				" /광질 숨기기, /광질 보이기 — 집계판 숨기기/보이기 (F6)",
 				" /광질 알림 켜기, /광질 알림 끄기 — 획득 알림",

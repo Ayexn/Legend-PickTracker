@@ -263,7 +263,7 @@ public final class EditHudScreen extends Screen {
 		double fx = sideX > 0 ? (edgeX - r0[0]) / r0[2] : sideX < 0 ? (r0[0] + r0[2] - edgeX) / r0[2] : 0;
 		double fy = sideY > 0 ? (edgeY - r0[1]) / r0[3] : sideY < 0 ? (r0[1] + r0[3] - edgeY) / r0[3] : 0;
 		double factor = sideX != 0 && sideY != 0 ? Math.max(fx, fy) : sideX != 0 ? fx : fy;
-		float scale = ModConfig.clampScale(Math.round(startScale * factor * 100) / 100f);
+		float scale = ModConfig.stepScale((float) (startScale * factor)); // in 5% steps
 		float k = scale / startScale;
 		float w = r0[2] * k;
 		float h = r0[3] * k;
@@ -319,18 +319,18 @@ public final class EditHudScreen extends Screen {
 		if (scrollY == 0) {
 			return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
 		}
-		float step = scrollY > 0 ? 0.05f : -0.05f;
+		float step = (scrollY > 0 ? 0.05f : -0.05f) * ModConfig.DEFAULT_SCALE; // 5%
 		ModConfig cfg = ModConfig.get();
 		if (inside(boardRect, mouseX, mouseY)) {
 			if (isBar(cfg)) {
-				cfg.barScale = ModConfig.clampScale(cfg.barScale + step);
+				cfg.barScale = ModConfig.stepScale(cfg.barScale + step);
 			} else {
-				cfg.panelScale = ModConfig.clampScale(cfg.panelScale + step);
+				cfg.panelScale = ModConfig.stepScale(cfg.panelScale + step);
 			}
 			return true;
 		}
 		if (inside(toastRect, mouseX, mouseY)) {
-			cfg.toastScale = ModConfig.clampScale(cfg.toastScale + step);
+			cfg.toastScale = ModConfig.stepScale(cfg.toastScale + step);
 			return true;
 		}
 		return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);

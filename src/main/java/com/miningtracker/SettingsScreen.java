@@ -3,7 +3,6 @@ package com.miningtracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.network.chat.Component;
 
 import java.util.ArrayList;
@@ -25,11 +24,6 @@ public final class SettingsScreen extends PanelScreen {
 
 	private static final String MODE_AUTO = "자동: 야생에서 곡괭이로 돌이나 광석을 캐면 시작돼요";
 	private static final String MODE_MANUAL = "수동: F7을 눌러서 직접 시작하고 끝내요";
-	private static final String PLACE_ON = "세레니티처럼 기록 안 할 곳에서 한 번 꺼 두세요";
-	private static final String PLACE_OFF = "이곳에서는 자동 기록을 하지 않아요";
-	private static final String PLACE_NOT_WILD = "여기는 야생이 아니라서 원래 자동 기록이 안 켜져요";
-	private static final String PLACE_MANUAL = "수동 방식에서는 쓰지 않아요";
-	private static final String PLACE_NO_WORLD = "월드에 들어가 있을 때 바꿀 수 있어요";
 	private static final String END_AUTO = "이 시간 동안 안 캐면 광질이 끝난 걸로 봐요";
 	private static final String END_MANUAL = "수동 방식에서는 F7을 다시 누르면 끝나요";
 	private static final String RESTART = "새 광질을 0부터 셀지, 전 기록에 이어서 셀지";
@@ -78,11 +72,6 @@ public final class SettingsScreen extends PanelScreen {
 				i -> ModConfig.get().autoMode = i == 0,
 				() -> ModConfig.get().autoMode ? MODE_AUTO : MODE_MANUAL,
 				() -> true));
-		record.add(new Setting("지금 있는 곳에서 자동 기록", Kind.SWITCH, null,
-				SettingsScreen::placeSelected,
-				SettingsScreen::selectPlace,
-				SettingsScreen::placeDescription,
-				SettingsScreen::placeUsable));
 		int[] seconds = ModConfig.END_AFTER_CHOICES;
 		String[] endLabels = new String[seconds.length];
 		for (int i = 0; i < seconds.length; i++) {
@@ -133,53 +122,7 @@ public final class SettingsScreen extends PanelScreen {
 				() -> true));
 		sections.add(new Section("화면", screen));
 
-		allDescriptions.addAll(List.of(MODE_AUTO, MODE_MANUAL, PLACE_ON, PLACE_OFF, PLACE_NOT_WILD, PLACE_MANUAL,
-				PLACE_NO_WORLD, END_AUTO, END_MANUAL, RESTART, SUMMARY, THEME, STATS));
-	}
-
-	// ------------------------------------------------------------------ the "지금 있는 곳" row
-
-	private static ClientLevel level() {
-		return Minecraft.getInstance().level;
-	}
-
-	private static boolean placeUsable() {
-		ClientLevel level = level();
-		return level != null && ModConfig.get().autoMode && Tracker.isWildWorld(level);
-	}
-
-	private static int placeSelected() {
-		ClientLevel level = level();
-		if (level == null || !Tracker.isWildWorld(level)) {
-			return 1; // never automatic here anyway
-		}
-		return ModConfig.get().isExcluded(Tracker.placeKey(level)) ? 1 : 0;
-	}
-
-	private static void selectPlace(int index) {
-		ClientLevel level = level();
-		if (level == null) {
-			return;
-		}
-		boolean off = index == 1;
-		ModConfig.get().setExcluded(Tracker.placeKey(level), off);
-		if (off) {
-			Tracker.INSTANCE.onPlaceSwitchedOff(Minecraft.getInstance());
-		}
-	}
-
-	private static String placeDescription() {
-		ClientLevel level = level();
-		if (level == null) {
-			return PLACE_NO_WORLD;
-		}
-		if (!Tracker.isWildWorld(level)) {
-			return PLACE_NOT_WILD;
-		}
-		if (!ModConfig.get().autoMode) {
-			return PLACE_MANUAL;
-		}
-		return ModConfig.get().isExcluded(Tracker.placeKey(level)) ? PLACE_OFF : PLACE_ON;
+		allDescriptions.addAll(List.of(MODE_AUTO, MODE_MANUAL, END_AUTO, END_MANUAL, RESTART, SUMMARY, THEME, STATS));
 	}
 
 	private static int indexOf(int[] values, int value) {

@@ -55,8 +55,6 @@ public final class ModConfig {
 	/** Post a summary to the chat (only visible to you) when a recording ends. */
 	public boolean chatSummary = true;
 	public List<String> wildDimensions = new ArrayList<>(DEFAULT_WILD_DIMENSIONS);
-	/** Places (world + spawn point) where automatic recording was switched off, e.g. 세레니티. */
-	public List<String> excludedPlaces = new ArrayList<>();
 
 	// ---- display ----
 	/** 집계판 모양: detail (자세히), slim (슬림), icons (아이콘), bar (한 줄). */
@@ -148,17 +146,6 @@ public final class ModConfig {
 		return wildDimensions.contains(dimensionId);
 	}
 
-	public boolean isExcluded(String place) {
-		return excludedPlaces.contains(place);
-	}
-
-	public void setExcluded(String place, boolean excluded) {
-		excludedPlaces.remove(place);
-		if (excluded) {
-			excludedPlaces.add(place);
-		}
-	}
-
 	public void resetLayout() {
 		panelX = DEFAULT_PANEL_X;
 		panelY = DEFAULT_PANEL_Y;
@@ -169,6 +156,11 @@ public final class ModConfig {
 		barCenterX = -1f;
 		barY = DEFAULT_BAR_Y;
 		barScale = DEFAULT_SCALE;
+	}
+
+	/** A size on the 5% steps the HUD editor uses (100% = DEFAULT_SCALE), within the limits. */
+	public static float stepScale(float scale) {
+		return clampScale(Math.round(scale / DEFAULT_SCALE * 20f) / 20f * DEFAULT_SCALE);
 	}
 
 	public static float clampScale(float scale) {
@@ -208,9 +200,6 @@ public final class ModConfig {
 		}
 		if (wildDimensions == null) {
 			wildDimensions = new ArrayList<>(DEFAULT_WILD_DIMENSIONS);
-		}
-		if (excludedPlaces == null) {
-			excludedPlaces = new ArrayList<>();
 		}
 		otherItemSet = null;
 	}
