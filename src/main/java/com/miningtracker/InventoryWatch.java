@@ -47,9 +47,6 @@ final class InventoryWatch {
 		/** Counts {@code amount} of {@code proto} as picked up (board, recording, pickup toast). */
 		void count(ItemStack proto, int amount);
 
-		/** Counts pickups of {@code key} that were waiting for a reason (magnet pet), up to {@code max}; how many. */
-		int claimWaiting(String key, int max);
-
 		/** A line for /광질 진단 최근. */
 		void note(String text);
 	}
@@ -135,7 +132,7 @@ final class InventoryWatch {
 		}
 	}
 
-	/** Counted already (a storage notice or a pickup): when it shows up in the inventory, it is not counted again. */
+	/** Counted already (a storage notice): when it shows up in the inventory, it is not counted again. */
 	void pickedUp(String key, int amount, long tick) {
 		int left = amount - take(growth, key, amount);
 		if (left > 0) {
@@ -205,6 +202,12 @@ final class InventoryWatch {
 		credits.clear();
 		dips.clear();
 		withdrawLeft = 0;
+	}
+
+	/** The player moved to another channel: what the server fills in now is not picked up. */
+	void newPlace(long tick, String why) {
+		last = null;
+		quiet(tick + NEW_INVENTORY_TICKS, why);
 	}
 
 	/** The player is gone for now (between worlds): the next inventory is a new one. */
@@ -330,10 +333,6 @@ final class InventoryWatch {
 			withdrawnItems += out;
 			left -= out;
 			counter.note(nameOf(key) + " " + out + "개 · 안 셈: 저장소에서 인출한 것");
-		}
-		if (left > 0) {
-			// a magnet pickup that was waiting for a pet to be seen: it reached the inventory, so it was ours
-			left -= counter.claimWaiting(key, left);
 		}
 		if (left > 0) {
 			growth.computeIfAbsent(key, k -> new ArrayDeque<>()).addLast(new Part(tick, left));

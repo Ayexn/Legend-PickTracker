@@ -3,7 +3,7 @@
 	"package": "com.miningtracker.mixin",
 	"compatibilityLevel": "JAVA_21",
 	"client": [
-		"ClientPacketListenerMixin",
+		"BossHealthOverlayAccessor",
 		"GuiMixin",
 		"MinecraftMixin"
 	],

@@ -88,11 +88,6 @@ public final class ModConfig {
 	 * watching the inventory while recording. What a storage notice already counted is not counted again.
 	 */
 	public boolean countInventory = true;
-	/**
-	 * Count items on the ground that vanish next to the player as picked up (guessing; for servers without the
-	 * item storage's "N개 수납" notices). Off: picked-up items count from those notices and the inventory only.
-	 */
-	public boolean groundPickups = false;
 	public List<String> otherItems = new ArrayList<>(DEFAULT_OTHER_ITEMS);
 
 	private transient Set<String> otherItemSet;
