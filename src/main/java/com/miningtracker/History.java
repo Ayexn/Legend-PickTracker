@@ -3,10 +3,14 @@ package com.miningtracker;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.component.CustomModelData;
 
 import java.io.Reader;
 import java.io.Writer;
@@ -23,12 +27,74 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Finished recordings for the statistics screen (광질 통계), saved to {@code config/mining-tracker-history.json}.
  * They stay on this computer; nothing is sent anywhere.
  */
 public final class History {
+	/**
+	 * How a server's own item looks: such items are a plain item (often paper) that the server's resource pack
+	 * draws differently, chosen by these two parts of the item. Kept so the statistics can draw the right icon.
+	 */
+	public static final class Look {
+		/** minecraft:item_model, when it is not the plain item's own. */
+		public String model;
+		/** minecraft:custom_model_data, when the item has it. */
+		public List<Float> floats;
+		public List<Boolean> flags;
+		public List<String> strings;
+		public List<Integer> colors;
+
+		/** The look of {@code stack}, or null when it looks like the plain item. */
+		static Look of(ItemStack stack) {
+			try {
+				Look look = new Look();
+				ResourceLocation model = stack.get(DataComponents.ITEM_MODEL);
+				if (model != null && !model.equals(new ItemStack(stack.getItem()).get(DataComponents.ITEM_MODEL))) {
+					look.model = model.toString();
+				}
+				CustomModelData data = stack.get(DataComponents.CUSTOM_MODEL_DATA);
+				if (data != null && !data.equals(CustomModelData.EMPTY)) {
+					look.floats = new ArrayList<>(data.floats());
+					look.flags = new ArrayList<>(data.flags());
+					look.strings = new ArrayList<>(data.strings());
+					look.colors = new ArrayList<>(data.colors());
+				}
+				return look.model == null && look.floats == null ? null : look;
+			} catch (RuntimeException e) {
+				return null;
+			}
+		}
+
+		void applyTo(ItemStack stack) {
+			ResourceLocation rl = model == null ? null : ResourceLocation.tryParse(model);
+			if (rl != null) {
+				stack.set(DataComponents.ITEM_MODEL, rl);
+			}
+			if (floats != null || flags != null || strings != null || colors != null) {
+				stack.set(DataComponents.CUSTOM_MODEL_DATA, new CustomModelData(orEmpty(floats), orEmpty(flags),
+						orEmpty(strings), orEmpty(colors)));
+			}
+		}
+
+		private static <T> List<T> orEmpty(List<T> list) {
+			return list == null ? List.of() : List.copyOf(list);
+		}
+
+		@Override
+		public boolean equals(Object o) {
+			return o instanceof Look l && Objects.equals(model, l.model) && Objects.equals(floats, l.floats)
+					&& Objects.equals(flags, l.flags) && Objects.equals(strings, l.strings) && Objects.equals(colors, l.colors);
+		}
+
+		@Override
+		public int hashCode() {
+			return Objects.hash(model, floats, flags, strings, colors);
+		}
+	}
+
 	/** One kind of mineral picked up in a recording. */
 	public static final class Item {
 		/** Item id, e.g. minecraft:diamond. */
@@ -36,6 +102,8 @@ public final class History {
 		/** Name as shown in game (server items keep their own name). */
 		public String name;
 		public long count;
+		/** How it looked when picked up (server items), or null. */
+		public Look look;
 
 		String key() {
 			return id + "|" + name;
@@ -128,7 +196,10 @@ public final class History {
 	}
 
 	private static final Gson GSON = new GsonBuilder().create();
+	/** Icons by item key (id|name). */
 	private static final Map<String, ItemStack> ICONS = new HashMap<>();
+	/** The last known look of each item key: from the records, the recording going on, and the inventory. */
+	private static final Map<String, Look> LOOKS = new HashMap<>();
 	private static List<Session> sessions = new ArrayList<>();
 	private static List<Day> days;
 
@@ -163,6 +234,9 @@ public final class History {
 				}
 			}
 		}
+		for (Session s : sessions) {
+			learnLooks(s);
+		}
 		days = null;
 	}
 
@@ -183,6 +257,7 @@ public final class History {
 	}
 
 	static void add(Session s) {
+		learnLooks(s);
 		sessions.add(s);
 		days = null;
 		save();
@@ -248,12 +323,48 @@ public final class History {
 		return null;
 	}
 
-	/** The item's icon (a server item shows its base item). */
-	static ItemStack icon(String itemId) {
-		return ICONS.computeIfAbsent(itemId, id -> {
-			ResourceLocation rl = ResourceLocation.tryParse(id);
+	/** The item's icon, drawn the way it looked when picked up (a server's own item shows its own look). */
+	static ItemStack icon(Item it) {
+		return ICONS.computeIfAbsent(it.key(), key -> {
+			ResourceLocation rl = ResourceLocation.tryParse(it.id);
 			net.minecraft.world.item.Item item = rl == null ? Items.AIR : BuiltInRegistries.ITEM.getValue(rl);
-			return item == Items.AIR ? ItemStack.EMPTY : new ItemStack(item);
+			if (item == Items.AIR) {
+				return ItemStack.EMPTY;
+			}
+			ItemStack stack = new ItemStack(item);
+			Look look = it.look != null ? it.look : LOOKS.get(key);
+			if (look != null) {
+				look.applyTo(stack);
+			}
+			return stack;
 		});
+	}
+
+	/** Keeps the look of an item seen now (picked up, or in the inventory), so older records draw it too. */
+	static void rememberLook(String key, Look look) {
+		if (look != null && !look.equals(LOOKS.get(key))) {
+			LOOKS.put(key, look);
+			ICONS.remove(key);
+		}
+	}
+
+	private static void learnLooks(Session s) {
+		for (Item it : s.items) {
+			rememberLook(it.key(), it.look);
+		}
+	}
+
+	/** The looks of what the player carries: old records of those items get their icon right away. */
+	static void learnLooks(Player player) {
+		if (player == null) {
+			return;
+		}
+		Inventory inventory = player.getInventory();
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack != null && !stack.isEmpty()) {
+				rememberLook(Tracker.keyOf(stack), Look.of(stack));
+			}
+		}
 	}
 }

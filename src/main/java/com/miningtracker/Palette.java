@@ -42,8 +42,18 @@ final class Palette {
 		return known != null ? known : fromName(stack.getHoverName().getString());
 	}
 
-	/** Server items with their own name: a steady colour picked from the name. */
+	/** Server minerals by a word in their name (토파즈 원석, 심층암 사파이어 광석, ...). */
+	private static final String[][] NAMED = {
+			{"토파즈", "FFF2A33A"}, {"사파이어", "FF3F72E8"}, {"플래티넘", "FFC9D3DE"}, {"루비", "FFE0405A"},
+			{"에메랄드", "FF4FD16A"}, {"자수정", "FFA87CE0"}, {"다이아", "FF5CE6DE"}, {"금", "FFF2C94C"}};
+
+	/** Server items with their own name: the colour its name says, or a steady colour picked from the name. */
 	static int fromName(String name) {
+		for (String[] named : NAMED) {
+			if (name.contains(named[0])) {
+				return (int) Long.parseLong(named[1], 16);
+			}
+		}
 		float hue = (name.hashCode() & 0xFFFF) / 65536f;
 		return hsv(hue, 0.55f, 0.92f);
 	}

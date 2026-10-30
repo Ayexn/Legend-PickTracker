@@ -1362,6 +1362,9 @@ public final class Tracker {
 					it = new History.Item();
 					it.id = BuiltInRegistries.ITEM.getKey(proto.getItem()).toString();
 					it.name = t.name;
+					// a server's own item: keep how it looks, for its icon in the statistics
+					it.look = History.Look.of(proto);
+					History.rememberLook(key, it.look);
 					session.items.put(key, it);
 				}
 				it.count += amount;

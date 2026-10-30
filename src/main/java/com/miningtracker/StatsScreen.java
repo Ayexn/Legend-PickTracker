@@ -23,6 +23,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -41,7 +42,8 @@ public final class StatsScreen extends PanelScreen {
 	private static final int SESSION_ROW = 13;
 	/** Room under the boxes for the buttons. */
 	private static final int FOOTER = 28;
-	private static final int MAX_KINDS = 8;
+	/** Minerals the table shows at most; the chosen ones beyond go into 그 외 (a safety limit, not a choice). */
+	private static final int MAX_KINDS = 40;
 	private static final int MAX_SESSIONS = 6;
 	private static final int MAX_MONTHS = 12;
 	/** 전체 makes room for this many months, so one or two months do not become huge bars. */
@@ -135,10 +137,14 @@ public final class StatsScreen extends PanelScreen {
 	private long copiedAt;
 	/** The days {@link #height} was worked out for. */
 	private List<History.Day> heightFor;
+	/** The chosen minerals {@link #height} was worked out for. */
+	private List<String> heightChosen;
 	private int height;
 
 	public StatsScreen(Screen parent) {
 		super(Component.literal("광질 통계"), parent);
+		// server items carried now: their old records get the right icon too
+		History.learnLooks(Minecraft.getInstance().player);
 	}
 
 	// ------------------------------------------------------------------ layout
@@ -155,21 +161,24 @@ public final class StatsScreen extends PanelScreen {
 			return 70;
 		}
 		List<History.Day> days = History.days();
-		if (heightFor != days) {
+		List<String> chosen = ModConfig.get().statsKinds;
+		// not while choosing, so the switches stay where they are
+		if (heightFor != days || (!picking && !Objects.equals(heightChosen, chosen))) {
 			heightFor = days;
+			heightChosen = chosen == null ? null : List.copyOf(chosen);
 			Total all = new Total(LocalDate.MIN, LocalDate.MAX);
-			int h = TOP + CARD_H + GAP + CHART_H + GAP + kindsHeight(roomFor(all.items.size(), all.other));
+			int h = TOP + CARD_H + GAP + CHART_H + GAP + kindsHeight(roomFor(all.items, all.other));
 			for (History.Day d : days) {
-				h = Math.max(h, TOP + CARD_H + GAP + kindsHeight(roomFor(d.items.size(), d.other)) + GAP + sessionsHeight(d));
+				h = Math.max(h, TOP + CARD_H + GAP + kindsHeight(roomFor(d.items, d.other)) + GAP + sessionsHeight(d));
 			}
 			height = h + FOOTER;
 		}
 		return height;
 	}
 
-	/** Lines the table may need, whatever is chosen: up to MAX_KINDS minerals, 그 외, and 기타. */
-	private static int roomFor(int kinds, long other) {
-		return Math.min(MAX_KINDS, kinds) + 1 + (other > 0 ? 1 : 0);
+	/** Lines the table needs for these minerals: the chosen ones, a line kept for 그 외, and 기타. */
+	private static int roomFor(List<History.Item> items, long other) {
+		return rows(items).shown().size() + 1 + (other > 0 ? 1 : 0);
 	}
 
 	/** Splits minerals (most first) into the ones the table shows and the rest (그 외). */
@@ -645,7 +654,7 @@ public final class StatsScreen extends PanelScreen {
 			countW = Math.max(countW, this.font.width(HudRenderer.fmt(it.count)));
 		}
 		for (History.Item it : list) {
-			ItemStack icon = History.icon(it.id);
+			ItemStack icon = History.icon(it);
 			int color = icon.isEmpty() ? Palette.fromName(it.name) : Palette.of(icon);
 			int bx0 = x0 + 4;
 			int bx1 = colCount + 6;
@@ -713,7 +722,7 @@ public final class StatsScreen extends PanelScreen {
 				if (hovered(cx - 2, y - 3, colW + 4, 13)) {
 					Theme.rrect(g, cx - 2, y - 3, colW + 4, 13, Theme.withAlpha(t.text, 14), 1);
 				}
-				HudRenderer.icon(g, History.icon(it.id), cx + 1, y);
+				HudRenderer.icon(g, History.icon(it), cx + 1, y);
 				int switchRight = cx + colW;
 				String count = HudRenderer.fmt(it.count);
 				int countRight = switchRight - 22 - 6;
@@ -923,12 +932,15 @@ public final class StatsScreen extends PanelScreen {
 		return a + " ~ " + b + to.getDayOfMonth() + "일";
 	}
 
-	/** "47%", "4.2%" (a share of all minerals). */
+	/** "47%", "4.2%", "<0.1%" (a share of all minerals). */
 	private static String share(long count, long all) {
 		if (all <= 0) {
 			return "-";
 		}
 		double p = count * 100.0 / all;
+		if (p > 0 && p < 0.05) {
+			return "<0.1%";
+		}
 		return p >= 10 || p == 0 ? Math.round(p) + "%" : String.format(Locale.ROOT, "%.1f%%", p);
 	}
 
