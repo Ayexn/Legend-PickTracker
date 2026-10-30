@@ -1,7 +1,10 @@
 package com.miningtracker;
 
+import net.minecraft.ChatFormatting;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -44,6 +47,10 @@ public final class StatsScreen extends PanelScreen {
 	private static final int WARN = 0xFFEC6868;
 	private static final long CONFIRM_MS = 3000;
 	private static final long NOTICE_MS = 4000;
+	/** How long 복사 shows "복사했어요". */
+	private static final long COPIED_MS = 2500;
+	/** Room under the boxes in the picture that 복사 makes. */
+	private static final int IMAGE_PAD = 7;
 	private static final String[] TABS = {"오늘", "7일", "30일", "전체"};
 	private static final int TODAY = 0;
 	private static final int WEEK = 1;
@@ -105,6 +112,13 @@ public final class StatsScreen extends PanelScreen {
 	/** A line for the bottom left after a button did something, shown for a while. */
 	private String notice;
 	private long noticeAt;
+	/** True while drawing the picture that 복사 makes: no buttons, no arrows, no mouse. */
+	private boolean forImage;
+	/** 복사 was pressed: the picture is made once this frame is drawn (see render). */
+	private boolean copyWanted;
+	/** A picture is on its way to the clipboard. */
+	private boolean copying;
+	private long copiedAt;
 	/** The days {@link #height} was worked out for. */
 	private List<History.Day> heightFor;
 	private int height;
@@ -186,6 +200,9 @@ public final class StatsScreen extends PanelScreen {
 			return;
 		}
 		drawTabs(g, t, w);
+		if (!forImage) {
+			drawCopyButton(g, t, w);
+		}
 		int bottom = h - FOOTER;
 		if (day != null) {
 			drawNavigator(g, t);
@@ -193,7 +210,111 @@ public final class StatsScreen extends PanelScreen {
 		} else {
 			drawRange(g, t, w, bottom);
 		}
-		drawFooter(g, t, w, h);
+		if (!forImage) {
+			drawFooter(g, t, w, h);
+		}
+	}
+
+	/** Where the boxes of what is shown end when they take only the room they need (in the picture). */
+	private int contentBottom() {
+		int top = TOP + CARD_H + GAP;
+		if (day == null) {
+			LocalDate[] range = range();
+			Total total = new Total(range[0], range[1]);
+			return top + CHART_H + GAP + kindsHeight(kindsRows(total.items.size(), total.other));
+		}
+		History.Day d = History.day(day);
+		if (d == null) {
+			return TOP + 70;
+		}
+		return top + kindsHeight(kindsRows(d.items.size(), d.other)) + GAP + sessionsHeight(d);
+	}
+
+	/** Height of the picture that 복사 makes: just under its boxes, without the buttons. */
+	int imageHeight() {
+		return contentBottom() + IMAGE_PAD;
+	}
+
+	/**
+	 * Draws the picture that 복사 makes, in panel pixels from (0, 0): the panel on a solid background, as on
+	 * screen but without the buttons, the arrows and anything the mouse lights up. The same on every screen size.
+	 */
+	void drawForImage(GuiGraphics g) {
+		Theme t = ModConfig.get().currentTheme();
+		int w = panelWidth();
+		int bottom = contentBottom();
+		double mouseX = mx;
+		double mouseY = my;
+		List<Hit> screenHits = new ArrayList<>(hits);
+		mx = -10000;
+		my = -10000;
+		forImage = true;
+		try {
+			g.fill(0, 0, w, bottom + IMAGE_PAD, Theme.withAlpha(t.screenBg, 255));
+			t.panel(g, 0, 0, w, bottom + IMAGE_PAD, true);
+			// the boxes end at h - FOOTER
+			drawPanel(g, t, w, bottom + FOOTER);
+		} finally {
+			forImage = false;
+			mx = mouseX;
+			my = mouseY;
+			hits.clear();
+			hits.addAll(screenHits);
+		}
+	}
+
+	/** 복사, left of the tabs; "복사했어요" for a moment after. */
+	private void drawCopyButton(GuiGraphics g, Theme t, int w) {
+		boolean copied = System.currentTimeMillis() - copiedAt <= COPIED_MS;
+		String label = copied ? "복사했어요" : "복사";
+		int bw = this.font.width(label) + 12;
+		int x = w - 8 - choicesWidth(TABS) - 6 - bw;
+		boolean hover = hovered(x, 4, bw, SEG_H);
+		int fill = copied ? Theme.withAlpha(t.accent, 56) : hover ? Theme.withAlpha(t.text, 40) : t.track;
+		Theme.rrect(g, x, 4, bw, SEG_H, fill, 1);
+		t.text(g, this.font, label, x + 6, 7, copied ? t.accent : t.sub);
+		hits.add(new Hit(x, 4, x + bw, 4 + SEG_H, this::copyImage));
+	}
+
+	private void copyImage() {
+		if (!copying && !History.isEmpty()) {
+			copyWanted = true;
+		}
+	}
+
+	@Override
+	public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
+		super.render(g, mouseX, mouseY, partialTick);
+		if (copyWanted) {
+			copyWanted = false;
+			copying = true;
+			// what this frame drew so far goes to the screen first; the picture is drawn into a buffer of its own
+			g.flush();
+			StatsImage.copy(this, this::copied);
+		}
+	}
+
+	/** The picture reached the clipboard, or was saved as a file, or neither. */
+	private void copied(StatsImage.Outcome outcome) {
+		copying = false;
+		long now = System.currentTimeMillis();
+		noticeAt = now;
+		if (outcome.copied()) {
+			copiedAt = now;
+			notice = "복사했어요 · 디스코드에서 Ctrl+V";
+		} else if (outcome.file() != null) {
+			notice = "클립보드 대신 screenshots 폴더에 저장했어요";
+			// like the game's own screenshot message: the file name opens it
+			Minecraft mc = Minecraft.getInstance();
+			if (mc.player != null) {
+				String path = outcome.file().getAbsolutePath();
+				Component link = Component.literal(outcome.file().getName()).withStyle(ChatFormatting.UNDERLINE)
+						.withStyle(style -> style.withClickEvent(new ClickEvent(ClickEvent.Action.OPEN_FILE, path)));
+				mc.player.displayClientMessage(Component.literal("[광질 측정] 통계 그림을 저장했어요: ").append(link), false);
+			}
+		} else {
+			notice = "복사하지 못했어요";
+		}
 	}
 
 	/** 오늘 · 7일 · 30일 · 전체 at the top right. The chosen one also takes a day or a month back to its start. */
@@ -219,9 +340,13 @@ public final class StatsScreen extends PanelScreen {
 		int x = 19 + this.font.width("광질 통계") + 8;
 		g.fill(x, 6, x + 1, 16, t.sep);
 		x += 8;
+		String title = day.getMonthValue() + "월 " + day.getDayOfMonth() + "일 (" + weekday(day) + ")";
+		if (forImage) {
+			t.text(g, this.font, title, x, 7, t.head);
+			return;
+		}
 		arrowButton(g, t, x, 4, true, () -> step(-1));
 		x += SEG_H + 6;
-		String title = day.getMonthValue() + "월 " + day.getDayOfMonth() + "일 (" + weekday(day) + ")";
 		t.text(g, this.font, title, x, 7, t.head);
 		x += this.font.width(title) + 6;
 		arrowButton(g, t, x, 4, false, () -> step(1));
@@ -349,7 +474,7 @@ public final class StatsScreen extends PanelScreen {
 		int x1 = w - 8;
 		Theme.rrect(g, x0, top, x1 - x0, CHART_H, t.card, 1);
 		int tx = x0 + 6;
-		if (month != null) {
+		if (month != null && !forImage) {
 			arrowButton(g, t, x0 + 4, top + 3, true, () -> month = null);
 			tx = x0 + 4 + SEG_H + 5;
 		}
@@ -511,30 +636,36 @@ public final class StatsScreen extends PanelScreen {
 		x -= 5 + undoW;
 		button(g, t, x, y + 1, undoW, undo, false, this::onUndo);
 
+		// what a pressed button is about to do takes the whole left side
 		History.Session last = History.last();
-		String text;
-		int color;
 		if (undoArmed && last != null) {
-			text = "지울 기록: " + describe(last);
-			color = t.text;
-		} else if (clearArmed) {
-			text = "모든 날의 기록이 지워져요";
-			color = WARN;
-		} else if (notice != null && now - noticeAt <= NOTICE_MS) {
-			text = notice;
-			color = t.sub;
-		} else if (day != null && tab != TODAY) {
+			t.text(g, this.font, HudRenderer.ellipsize(this.font, "지울 기록: " + describe(last), x - 8 - 9), 9, y + 6, t.text);
+			return;
+		}
+		if (clearArmed) {
+			t.text(g, this.font, "모든 날의 기록이 지워져요", 9, y + 6, WARN);
+			return;
+		}
+		int tx = 9;
+		if (day != null && tab != TODAY) {
 			int backW = buttonWidth("돌아가기");
 			button(g, t, 7, y + 1, backW, "돌아가기", false, () -> day = null);
+			tx = 7 + backW + 6;
+		}
+		String text;
+		int color = t.dim;
+		if (notice != null && now - noticeAt <= NOTICE_MS) {
+			text = notice;
+			color = t.sub;
+		} else if (tx > 9) {
+			// 돌아가기 is enough
 			return;
 		} else if (day != null) {
 			text = "좌우 방향키로 다른 날도 볼 수 있어요";
-			color = t.dim;
 		} else {
 			text = tab == ALL && month == null ? "막대를 누르면 그달만 자세히 볼 수 있어요" : "막대를 누르면 그날만 자세히 볼 수 있어요";
-			color = t.dim;
 		}
-		t.text(g, this.font, HudRenderer.ellipsize(this.font, text, x - 8 - 9), 9, y + 6, color);
+		t.text(g, this.font, HudRenderer.ellipsize(this.font, text, x - 8 - tx), tx, y + 6, color);
 	}
 
 	// ------------------------------------------------------------------ buttons
