@@ -1,6 +1,7 @@
 package com.miningtracker;
 
 import com.mojang.blaze3d.ProjectionType;
+import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.pipeline.TextureTarget;
 import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -19,15 +20,25 @@ import java.util.function.Consumer;
  * where that does not work (macOS, or the clipboard refuses) it is saved to the screenshots folder instead.
  * Nothing leaves this computer.
  */
-final class StatsImage {
+public final class StatsImage {
 	/** Picture pixels for each panel pixel. */
 	static final int SCALE = 2;
+	/** The picture's buffer while it is being drawn, else null (see MinecraftMixin). */
+	private static RenderTarget drawingInto;
 
 	/** How it went: on the clipboard, or saved as {@code file}, or neither. */
 	record Outcome(boolean copied, File file) {
 	}
 
 	private StatsImage() {
+	}
+
+	/**
+	 * Where the game's drawing should go instead of the screen, or null (nearly always). The game sends all its
+	 * screen drawing to the main target; MinecraftMixin hands out this buffer as the main target meanwhile.
+	 */
+	public static RenderTarget drawingInto() {
+		return drawingInto;
 	}
 
 	/**
@@ -61,6 +72,8 @@ final class StatsImage {
 		try {
 			target.setClearColor(0f, 0f, 0f, 0f);
 			target.clear();
+			// from here the game draws into the picture, not the screen
+			drawingInto = target;
 			target.bindWrite(true);
 			// like the game's own screen drawing, but one unit is one pixel of the picture
 			RenderSystem.setProjectionMatrix(new Matrix4f().setOrtho(0f, w, h, 0f, 1000f, 21000f), ProjectionType.ORTHOGRAPHIC);
@@ -76,6 +89,7 @@ final class StatsImage {
 			}
 			return Screenshot.takeScreenshot(target);
 		} finally {
+			drawingInto = null;
 			RenderSystem.restoreProjectionMatrix();
 			target.destroyBuffers();
 			mc.getMainRenderTarget().bindWrite(true);
@@ -85,9 +99,15 @@ final class StatsImage {
 	/** Clipboard first; the screenshots folder when there is no clipboard to use. */
 	private static Outcome deliver(Minecraft mc, NativeImage image) {
 		try {
+			int[] argb = image.getPixels();
+			if (blank(argb)) {
+				// nothing was drawn into it: better no picture than an empty one
+				MiningTrackerClient.LOGGER.warn("광질 통계 그림이 비어 있어서 복사하지 않았어요");
+				return new Outcome(false, null);
+			}
 			if (!Minecraft.ON_OSX) {
 				try {
-					ClipboardImage.put(image);
+					ClipboardImage.put(argb, image.getWidth(), image.getHeight());
 					return new Outcome(true, null);
 				} catch (Throwable e) {
 					// no clipboard for Java here, or another program holds it
@@ -107,5 +127,15 @@ final class StatsImage {
 		} finally {
 			image.close();
 		}
+	}
+
+	/** True if every pixel is the same colour. */
+	private static boolean blank(int[] argb) {
+		for (int c : argb) {
+			if (c != argb[0]) {
+				return false;
+			}
+		}
+		return true;
 	}
 }

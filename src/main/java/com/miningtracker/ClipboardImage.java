@@ -1,7 +1,5 @@
 package com.miningtracker;
 
-import com.mojang.blaze3d.platform.NativeImage;
-
 import java.awt.Toolkit;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.Transferable;
@@ -18,15 +16,16 @@ final class ClipboardImage {
 	private ClipboardImage() {
 	}
 
-	/** Throws when this computer has no clipboard for Java, or another program keeps it busy. */
-	static void put(NativeImage image) throws InterruptedException {
+	/**
+	 * Puts the picture ({@code argb}, row by row) on the clipboard. Throws when this computer has no clipboard for
+	 * Java, or another program keeps it busy.
+	 */
+	static void put(int[] argb, int w, int h) throws InterruptedException {
 		// the game turns Java's window toolkit off (it draws with GLFW); the clipboard needs it, so turn it on
 		// before java.awt is first used (it decides once)
 		System.setProperty("java.awt.headless", "false");
-		int w = image.getWidth();
-		int h = image.getHeight();
 		BufferedImage picture = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
-		picture.setRGB(0, 0, w, h, image.getPixels(), 0, w);
+		picture.setRGB(0, 0, w, h, argb, 0, w);
 		Transferable content = new Picture(picture);
 		IllegalStateException busy = new IllegalStateException("clipboard busy");
 		for (int i = 0; i < TRIES; i++) {

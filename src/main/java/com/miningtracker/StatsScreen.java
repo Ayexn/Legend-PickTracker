@@ -18,10 +18,12 @@ import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 광질 통계 (F10 or /광질 통계), laid out like the 세공 도우미's statistics: 오늘 · 7일 · 30일 · 전체 on top, the
@@ -57,6 +59,14 @@ public final class StatsScreen extends PanelScreen {
 	private static final int DAYS30 = 2;
 	private static final int ALL = 3;
 	private static final String[] WEEKDAYS = {"월", "화", "수", "목", "금", "토", "일"};
+
+	/** The table's lines: the minerals shown (the chosen ones, most first) and what goes into the 그 외 line. */
+	private record Rows(List<History.Item> shown, int restKinds, long restCount) {
+		/** Lines in the table, with 기타 when there is any. */
+		int lines(long other) {
+			return Math.max(1, shown.size() + (restKinds > 0 ? 1 : 0) + (other > 0 ? 1 : 0));
+		}
+	}
 
 	/** A bar of the chart. {@code click} is null for an empty place (a day still to come). */
 	private record Bar(String label, long value, boolean now, String tip, Runnable click) {
@@ -112,6 +122,10 @@ public final class StatsScreen extends PanelScreen {
 	/** A line for the bottom left after a button did something, shown for a while. */
 	private String notice;
 	private long noticeAt;
+	/** 광물별 → 고르기 is open: the switches for the minerals take the place of the chart and the table. */
+	private boolean picking;
+	/** Lines of switches scrolled past. */
+	private int pickScroll;
 	/** True while drawing the picture that 복사 makes: no buttons, no arrows, no mouse. */
 	private boolean forImage;
 	/** 복사 was pressed: the picture is made once this frame is drawn (see render). */
@@ -144,17 +158,36 @@ public final class StatsScreen extends PanelScreen {
 		if (heightFor != days) {
 			heightFor = days;
 			Total all = new Total(LocalDate.MIN, LocalDate.MAX);
-			int h = TOP + CARD_H + GAP + CHART_H + GAP + kindsHeight(kindsRows(all.items.size(), all.other));
+			int h = TOP + CARD_H + GAP + CHART_H + GAP + kindsHeight(roomFor(all.items.size(), all.other));
 			for (History.Day d : days) {
-				h = Math.max(h, TOP + CARD_H + GAP + kindsHeight(kindsRows(d.items.size(), d.other)) + GAP + sessionsHeight(d));
+				h = Math.max(h, TOP + CARD_H + GAP + kindsHeight(roomFor(d.items.size(), d.other)) + GAP + sessionsHeight(d));
 			}
 			height = h + FOOTER;
 		}
 		return height;
 	}
 
-	private static int kindsRows(int kinds, long other) {
-		return Math.max(1, Math.min(MAX_KINDS, kinds) + (other > 0 ? 1 : 0));
+	/** Lines the table may need, whatever is chosen: up to MAX_KINDS minerals, 그 외, and 기타. */
+	private static int roomFor(int kinds, long other) {
+		return Math.min(MAX_KINDS, kinds) + 1 + (other > 0 ? 1 : 0);
+	}
+
+	/** Splits minerals (most first) into the ones the table shows and the rest (그 외). */
+	private static Rows rows(List<History.Item> items) {
+		List<String> chosen = ModConfig.get().statsKinds;
+		Set<String> keep = chosen == null ? null : new HashSet<>(chosen);
+		List<History.Item> shown = new ArrayList<>();
+		int restKinds = 0;
+		long restCount = 0;
+		for (History.Item it : items) {
+			if ((keep == null || keep.contains(it.key())) && shown.size() < MAX_KINDS) {
+				shown.add(it);
+			} else {
+				restKinds++;
+				restCount += it.count;
+			}
+		}
+		return new Rows(shown, restKinds, restCount);
 	}
 
 	private static int kindsHeight(int rows) {
@@ -202,6 +235,7 @@ public final class StatsScreen extends PanelScreen {
 		drawTabs(g, t, w);
 		if (!forImage) {
 			drawCopyButton(g, t, w);
+			drawHomeButton(g, t, w);
 		}
 		int bottom = h - FOOTER;
 		if (day != null) {
@@ -221,13 +255,13 @@ public final class StatsScreen extends PanelScreen {
 		if (day == null) {
 			LocalDate[] range = range();
 			Total total = new Total(range[0], range[1]);
-			return top + CHART_H + GAP + kindsHeight(kindsRows(total.items.size(), total.other));
+			return top + CHART_H + GAP + kindsHeight(rows(total.items).lines(total.other));
 		}
 		History.Day d = History.day(day);
 		if (d == null) {
 			return TOP + 70;
 		}
-		return top + kindsHeight(kindsRows(d.items.size(), d.other)) + GAP + sessionsHeight(d);
+		return top + kindsHeight(rows(d.items).lines(d.other)) + GAP + sessionsHeight(d);
 	}
 
 	/** Height of the picture that 복사 makes: just under its boxes, without the buttons. */
@@ -261,6 +295,29 @@ public final class StatsScreen extends PanelScreen {
 			hits.clear();
 			hits.addAll(screenHits);
 		}
+	}
+
+	/** 홈, in the middle of the top row: back to how the statistics open (7일). Greyed out when already there. */
+	private void drawHomeButton(GuiGraphics g, Theme t, int w) {
+		boolean home = tab == WEEK && day == null && month == null;
+		int bw = 7 + 3 + this.font.width("홈") + 12;
+		int x = (w - bw) / 2;
+		boolean hover = !home && hovered(x, 4, bw, SEG_H);
+		Theme.rrect(g, x, 4, bw, SEG_H, hover ? Theme.withAlpha(t.text, 40) : t.track, 1);
+		int color = home ? t.dim : t.sub;
+		house(g, x + 6, 7, color);
+		t.text(g, this.font, "홈", x + 6 + 7 + 3, 7, color);
+		if (!home) {
+			hits.add(new Hit(x, 4, x + bw, 4 + SEG_H, () -> show(WEEK)));
+		}
+	}
+
+	/** A small house, 7 x 7. */
+	private static void house(GuiGraphics g, int x, int y, int color) {
+		for (int i = 0; i < 4; i++) {
+			g.fill(x + 3 - i, y + i, x + 4 + i, y + i + 1, color);
+		}
+		g.fill(x + 1, y + 4, x + 6, y + 7, color);
 	}
 
 	/** 복사, left of the tabs; "복사했어요" for a moment after. */
@@ -333,6 +390,7 @@ public final class StatsScreen extends PanelScreen {
 		tab = index;
 		month = null;
 		day = index == TODAY ? LocalDate.now() : null;
+		picking = false;
 	}
 
 	/** After the title: ◀ the day ▶. */
@@ -364,6 +422,10 @@ public final class StatsScreen extends PanelScreen {
 		Total total = new Total(range[0], range[1]);
 		drawCards(g, t, w, total.seconds, total.blocks, total.minerals, total.sessions);
 		int top = TOP + CARD_H + GAP;
+		if (picking && !forImage) {
+			drawPicker(g, t, w, top, bottom);
+			return;
+		}
 		drawChart(g, t, w, top, total);
 		drawKinds(g, t, w, top + CHART_H + GAP, bottom, total.items, total.other, total.minerals);
 	}
@@ -371,6 +433,15 @@ public final class StatsScreen extends PanelScreen {
 	/** One day: totals, minerals by kind and each recording. */
 	private void drawDay(GuiGraphics g, Theme t, int w, int bottom) {
 		History.Day d = History.day(day);
+		if (picking && !forImage) {
+			if (d == null) {
+				drawCards(g, t, w, 0, 0, 0, 0);
+			} else {
+				drawCards(g, t, w, d.seconds, d.blocks, d.minerals, d.sessions.size());
+			}
+			drawPicker(g, t, w, TOP + CARD_H + GAP, bottom);
+			return;
+		}
 		if (d == null) {
 			int cw = w - 8 - X0;
 			Theme.rrect(g, X0, TOP, cw, bottom - TOP, t.card, 1);
@@ -383,7 +454,7 @@ public final class StatsScreen extends PanelScreen {
 		}
 		drawCards(g, t, w, d.seconds, d.blocks, d.minerals, d.sessions.size());
 		int top = TOP + CARD_H + GAP;
-		int kindsBottom = top + kindsHeight(kindsRows(d.items.size(), d.other));
+		int kindsBottom = top + kindsHeight(rows(d.items).lines(d.other));
 		drawKinds(g, t, w, top, kindsBottom, d.items, d.other, d.minerals);
 		drawSessions(g, t, d, w, kindsBottom + GAP, bottom);
 	}
@@ -542,7 +613,10 @@ public final class StatsScreen extends PanelScreen {
 		}
 	}
 
-	/** Minerals by kind, each on a bar as long as its count: the count and its share of all minerals. */
+	/**
+	 * Minerals by kind, each on a bar as long as its count: the count and its share of all minerals. Only the chosen
+	 * ones (고르기), the rest added up in one 그 외 line.
+	 */
 	private void drawKinds(GuiGraphics g, Theme t, int w, int top, int bottom, List<History.Item> items, long other,
 			long minerals) {
 		int x0 = X0;
@@ -551,20 +625,26 @@ public final class StatsScreen extends PanelScreen {
 		int colShare = right - 7;
 		int colCount = colShare - 52;
 		t.text(g, this.font, "광물별", x0 + 6, top + 5, t.sub);
+		if (!forImage) {
+			chip(g, t, x0 + 6 + this.font.width("광물별") + 6, top + 2, "고르기", false, () -> {
+				picking = true;
+				pickScroll = 0;
+			});
+		}
 		t.textRight(g, this.font, "개수", colCount, top + 5, t.dim);
 		t.textRight(g, this.font, "비율", colShare, top + 5, t.dim);
 		int y = top + 19;
 		if (items.isEmpty() && other <= 0) {
 			t.text(g, this.font, "먹은 광물이 없어요", x0 + 19, y, t.dim);
 		}
-		int shown = Math.min(MAX_KINDS, items.size());
-		long most = items.isEmpty() ? 0 : items.get(0).count;
-		int countW = 0;
-		for (int i = 0; i < shown; i++) {
-			countW = Math.max(countW, this.font.width(HudRenderer.fmt(items.get(i).count)));
+		Rows rows = rows(items);
+		List<History.Item> list = rows.shown();
+		long most = list.isEmpty() ? 0 : list.get(0).count;
+		int countW = this.font.width(HudRenderer.fmt(rows.restCount()));
+		for (History.Item it : list) {
+			countW = Math.max(countW, this.font.width(HudRenderer.fmt(it.count)));
 		}
-		for (int i = 0; i < shown; i++) {
-			History.Item it = items.get(i);
+		for (History.Item it : list) {
 			ItemStack icon = History.icon(it.id);
 			int color = icon.isEmpty() ? Palette.fromName(it.name) : Palette.of(icon);
 			int bx0 = x0 + 4;
@@ -578,11 +658,130 @@ public final class StatsScreen extends PanelScreen {
 			t.textRight(g, this.font, share(it.count, minerals), colShare, y, t.sub);
 			y += ROW;
 		}
+		if (rows.restKinds() > 0) {
+			// the minerals not chosen (and any past the eighth), added up
+			for (int i = 0; i < 3; i++) {
+				g.fill(x0 + 9 + i * 3, y + 4, x0 + 10 + i * 3, y + 5, t.dim);
+			}
+			t.text(g, this.font, "그 외 " + rows.restKinds() + "종", x0 + 19, y, t.dim);
+			t.textRight(g, this.font, HudRenderer.fmt(rows.restCount()), colCount, y, t.dim);
+			t.textRight(g, this.font, share(rows.restCount(), minerals), colShare, y, t.dim);
+			y += ROW;
+		}
 		if (other > 0) {
 			HudRenderer.icon(g, new ItemStack(Items.COBBLED_DEEPSLATE), x0 + 8, y);
 			t.text(g, this.font, "기타", x0 + 19, y, t.dim);
 			t.textRight(g, this.font, HudRenderer.fmt(other), colCount, y, t.dim);
 		}
+	}
+
+	/**
+	 * 고르기: every mineral ever picked up, two to a line, each with a switch; the table shows the ones switched on.
+	 * Takes the place of the chart and the table (of the table and the recordings on a day).
+	 */
+	private void drawPicker(GuiGraphics g, Theme t, int w, int top, int bottom) {
+		int x0 = X0;
+		int right = w - 8;
+		Theme.rrect(g, x0, top, right - x0, bottom - top, t.card, 1);
+		t.text(g, this.font, "광물별 표에 보일 광물", x0 + 6, top + 5, t.sub);
+		t.text(g, this.font, "(숫자는 모든 기록 합계)", x0 + 6 + this.font.width("광물별 표에 보일 광물") + 6, top + 5, t.dim);
+		int bx = right - 5 - (this.font.width("완료") + 12);
+		chip(g, t, bx, top + 3, "완료", true, () -> picking = false);
+		bx -= 4 + this.font.width("전부 켜기") + 12;
+		chip(g, t, bx, top + 3, "전부 켜기", false, StatsScreen::chooseAll);
+		List<History.Item> known = new Total(LocalDate.MIN, LocalDate.MAX).items;
+		int listTop = top + 22;
+		int perColumn = Math.max(1, (bottom - listTop - 2) / ROW);
+		int gap = 10;
+		int colW = (right - x0 - 12 - gap) / 2;
+		int lines = (known.size() + 1) / 2;
+		pickScroll = Math.max(0, Math.min(pickScroll, lines - perColumn));
+		if (known.isEmpty()) {
+			t.text(g, this.font, "아직 먹은 광물이 없어요", x0 + 19, listTop + 3, t.dim);
+		}
+		for (int line = 0; line < perColumn && line + pickScroll < lines; line++) {
+			for (int col = 0; col < 2; col++) {
+				int index = (line + pickScroll) * 2 + col;
+				if (index >= known.size()) {
+					break;
+				}
+				History.Item it = known.get(index);
+				String key = it.key();
+				boolean on = isChosen(key);
+				int cx = x0 + 6 + col * (colW + gap);
+				int y = listTop + 3 + line * ROW;
+				if (hovered(cx - 2, y - 3, colW + 4, 13)) {
+					Theme.rrect(g, cx - 2, y - 3, colW + 4, 13, Theme.withAlpha(t.text, 14), 1);
+				}
+				HudRenderer.icon(g, History.icon(it.id), cx + 1, y);
+				int switchRight = cx + colW;
+				String count = HudRenderer.fmt(it.count);
+				int countRight = switchRight - 22 - 6;
+				t.textRight(g, this.font, count, countRight, y, t.dim);
+				int nameMax = countRight - this.font.width(count) - 6 - (cx + 12);
+				t.text(g, this.font, HudRenderer.ellipsize(this.font, it.name, nameMax), cx + 12, y, on ? t.text : t.dim);
+				toggle(g, t, on, true, switchRight, y - 2, () -> flip(key));
+				hits.add(new Hit(cx - 2, y - 3, cx + colW + 2, y + 10, () -> flip(key)));
+			}
+		}
+		// more above or below (mouse wheel)
+		int mid = (x0 + right) / 2 - 3;
+		if (pickScroll > 0) {
+			scrollMark(g, t, mid, listTop - 5, true);
+		}
+		if (pickScroll + perColumn < lines) {
+			scrollMark(g, t, mid, bottom - 5, false);
+		}
+	}
+
+	private static void scrollMark(GuiGraphics g, Theme t, int x, int y, boolean up) {
+		for (int i = 0; i < 3; i++) {
+			int row = up ? y + i : y + 2 - i;
+			g.fill(x + 2 - i, row, x + 3 + i, row + 1, t.dim);
+		}
+	}
+
+	private static boolean isChosen(String key) {
+		List<String> chosen = ModConfig.get().statsKinds;
+		return chosen == null || chosen.contains(key);
+	}
+
+	/** One switch: from "all" (nothing chosen yet) every mineral known so far counts as chosen first. */
+	private static void flip(String key) {
+		ModConfig cfg = ModConfig.get();
+		List<String> chosen = new ArrayList<>();
+		if (cfg.statsKinds == null) {
+			for (History.Item it : new Total(LocalDate.MIN, LocalDate.MAX).items) {
+				chosen.add(it.key());
+			}
+		} else {
+			chosen.addAll(cfg.statsKinds);
+		}
+		if (!chosen.remove(key)) {
+			chosen.add(key);
+		}
+		cfg.statsKinds = chosen;
+		ModConfig.save();
+	}
+
+	/** 전부 켜기: back to every mineral in the table (new ones too). */
+	private static void chooseAll() {
+		ModConfig.get().statsKinds = null;
+		ModConfig.save();
+	}
+
+	/** A small button as tall as the tabs; {@code primary} in the accent colour. */
+	private void chip(GuiGraphics g, Theme t, int x, int y, String label, boolean primary, Runnable action) {
+		int bw = this.font.width(label) + 12;
+		boolean hover = hovered(x, y, bw, SEG_H);
+		if (primary) {
+			Theme.rrect(g, x, y, bw, SEG_H, hover ? Theme.mix(t.accent, 0xFFFFFFFF, 0.15f) : t.accent, 1);
+			g.drawString(this.font, label, x + 6, y + 3, t.onAccent, false);
+		} else {
+			Theme.rrect(g, x, y, bw, SEG_H, hover ? Theme.withAlpha(t.text, 40) : t.track, 1);
+			t.text(g, this.font, label, x + 6, y + 3, t.sub);
+		}
+		hits.add(new Hit(x, y, x + bw, y + SEG_H, action));
 	}
 
 	/** Each recording of the day, in a box down to {@code bottom}. */
@@ -657,6 +856,8 @@ public final class StatsScreen extends PanelScreen {
 		if (notice != null && now - noticeAt <= NOTICE_MS) {
 			text = notice;
 			color = t.sub;
+		} else if (picking) {
+			text = "켠 광물만 표에 나와요 · 나머지는 그 외로";
 		} else if (tx > 9) {
 			// 돌아가기 is enough
 			return;
@@ -747,6 +948,16 @@ public final class StatsScreen extends PanelScreen {
 	}
 
 	// ------------------------------------------------------------------ input
+
+	@Override
+	public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+		if (picking && scrollY != 0) {
+			// kept in range while drawing
+			pickScroll += scrollY > 0 ? -1 : 1;
+			return true;
+		}
+		return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
+	}
 
 	@Override
 	public boolean keyPressed(int keyCode, int scanCode, int modifiers) {

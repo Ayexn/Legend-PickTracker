@@ -78,6 +78,11 @@ public final class ModConfig {
 	public float barScale = DEFAULT_SCALE;
 	public int maxBlockRows = 5;
 	public int maxItemRows = 8;
+	/**
+	 * 광질 통계 → 광물별 → 고르기: the minerals the table shows ("item id|name", as the history keeps them); the
+	 * others are added up in one "그 외" line. null = all of them (also ones picked up for the first time).
+	 */
+	public List<String> statsKinds = null;
 	public List<String> otherItems = new ArrayList<>(DEFAULT_OTHER_ITEMS);
 
 	private transient Set<String> otherItemSet;
@@ -189,6 +194,10 @@ public final class ModConfig {
 		maxBlockRows = Math.max(1, Math.min(20, maxBlockRows));
 		maxItemRows = Math.max(1, Math.min(20, maxItemRows));
 		endAfterSeconds = Math.max(10, Math.min(1800, endAfterSeconds));
+		if (statsKinds != null) {
+			statsKinds = new ArrayList<>(statsKinds);
+			statsKinds.removeIf(k -> k == null);
+		}
 		if (otherItems == null) {
 			otherItems = new ArrayList<>(DEFAULT_OTHER_ITEMS);
 		}
