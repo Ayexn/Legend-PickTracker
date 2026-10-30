@@ -194,6 +194,20 @@ public final class History {
 		save();
 	}
 
+	/** The recording saved last (방금 기록), or null. */
+	static Session last() {
+		return sessions.isEmpty() ? null : sessions.get(sessions.size() - 1);
+	}
+
+	/** Takes back the recording saved last (방금 기록 취소). */
+	static void removeLast() {
+		if (!sessions.isEmpty()) {
+			sessions.remove(sessions.size() - 1);
+			days = null;
+			save();
+		}
+	}
+
 	static boolean isEmpty() {
 		return sessions.isEmpty();
 	}

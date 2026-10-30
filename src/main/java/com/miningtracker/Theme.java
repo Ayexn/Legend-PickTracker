@@ -90,6 +90,11 @@ public final class Theme {
 		return ALL.indexOf(this);
 	}
 
+	/** The green "+N" of the pickup toasts (darker on the light theme so it stays readable). */
+	int plus() {
+		return shadow ? 0xFF8AE28A : 0xFF1A926A;
+	}
+
 	/** Colour of the "측정 중" mark: the accent, or grey while resting (the time is stopped). */
 	int status(boolean resting) {
 		return resting ? dim : accent;
