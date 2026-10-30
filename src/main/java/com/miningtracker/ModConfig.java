@@ -83,6 +83,16 @@ public final class ModConfig {
 	 * others are added up in one "그 외" line. null = all of them (also ones picked up for the first time).
 	 */
 	public List<String> statsKinds = null;
+	/**
+	 * Also count items that come into the inventory (server minerals such as 토파즈 go there straight away), by
+	 * watching the inventory while recording. What a storage notice already counted is not counted again.
+	 */
+	public boolean countInventory = true;
+	/**
+	 * Count items on the ground that vanish next to the player as picked up (guessing; for servers without the
+	 * item storage's "N개 수납" notices). Off: picked-up items count from those notices and the inventory only.
+	 */
+	public boolean groundPickups = false;
 	public List<String> otherItems = new ArrayList<>(DEFAULT_OTHER_ITEMS);
 
 	private transient Set<String> otherItemSet;

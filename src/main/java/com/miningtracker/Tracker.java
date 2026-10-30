@@ -15,7 +15,9 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.item.FallingBlockEntity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.FallingBlock;
@@ -27,13 +29,17 @@ import net.minecraft.world.phys.Vec3;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Map;
 import java.util.Set;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 
 /**
  * Counts mined blocks and picked-up items while a recording (광질 기록) is running.
@@ -184,6 +190,19 @@ public final class Tracker {
 		 * was: up to 1 block, 1-2, 2-3, more. Shows how far this server merges items (vanilla: under 1 block).
 		 */
 		public final long[] mergeDistance = new long[4];
+		/** "[아이템 저장소] ... N개 수납!" notices counted, and how many items. */
+		public long storageNotices;
+		public long storageItems;
+		/** The same notice again (the storage's count had not changed): not counted. */
+		public long storageRepeats;
+		/** How much more the storage's count went up than the notices said (missed notices, or put in by hand). */
+		public long storageGap;
+		/** Notices for a name no item was found for: counted as paper with that name. */
+		public long storageUnknown;
+		/** Notices while not recording here: not counted. */
+		public long storageNotRecording;
+		/** "N개 인출" notices. */
+		public long withdrawals;
 	}
 
 	private static final class PrimaryCheck {
@@ -378,6 +397,36 @@ public final class Tracker {
 	private boolean openStatsNextTick;
 	/** Old items pulled in from a distance before a magnet pet was seen at work: counted once it is. */
 	private final List<Waiting> magnetWaiting = new ArrayList<>();
+	/** Items the server puts straight into the inventory (never on the ground). */
+	private final InventoryWatch inventory = new InventoryWatch(new InventoryWatch.Counter() {
+		@Override
+		public void count(ItemStack proto, int amount) {
+			Tracker.this.count(proto, amount);
+		}
+
+		@Override
+		public int claimWaiting(String key, int max) {
+			return Tracker.this.claimWaiting(key, max);
+		}
+
+		@Override
+		public void note(String text) {
+			Tracker.this.note(text);
+		}
+	});
+	/** The storage's count of each item in its last notice (name|max): a notice with the same count is a repeat. */
+	private final Map<String, Long> storageBalances = new HashMap<>();
+	/** The last notice that did not say the storage's count, and when (a repeat of it within 1.5 s is not counted). */
+	private String lastNotice = "";
+	private long lastNoticeAt;
+	/** Items with each name seen lately (on the ground near the player): a storage notice only gives the name. */
+	private final Map<String, ItemStack> seenByName = new HashMap<>();
+	/** The game's items by their name in the game's language, made when first needed. */
+	private Map<String, Item> itemsByName;
+	/** What was decided lately and why, for /광질 진단 최근 (oldest first). */
+	private final Deque<String> recent = new ArrayDeque<>();
+	private static final int RECENT_KEEP = 60;
+	private static final DateTimeFormatter CLOCK = DateTimeFormatter.ofPattern("HH:mm:ss");
 	/** When items came in from a distance lately (one entry per tick). */
 	private final ArrayDeque<Long> magnetTimes = new ArrayDeque<>();
 	/** A magnet pet is taken to be at work until this tick. */
@@ -476,6 +525,8 @@ public final class Tracker {
 		if (!recording) {
 			return;
 		}
+		// what came into the inventory and is still waiting to be counted belongs to this recording
+		inventory.finish(tick);
 		recording = false;
 		saveSession();
 		primaryChecks.clear();
@@ -497,6 +548,7 @@ public final class Tracker {
 	/** The game is closing: keep what the running recording has so far. */
 	public void onClientStopping() {
 		if (recording) {
+			inventory.finish(tick);
 			saveSession();
 		}
 	}
@@ -516,6 +568,9 @@ public final class Tracker {
 	 * statistics (as its own recording); only the board starts over.
 	 */
 	public void clearTallies() {
+		if (recording) {
+			inventory.flush(tick); // what came into the inventory a moment ago belongs to what is cleared
+		}
 		blocks.clear();
 		items.clear();
 		toasts.clear();
@@ -537,6 +592,14 @@ public final class Tracker {
 		stats.neighborBlocks = 0;
 		stats.restoredBlocks = 0;
 		stats.rebrokenBlocks = 0;
+		inventory.clearStats();
+		stats.storageNotices = 0;
+		stats.storageItems = 0;
+		stats.storageRepeats = 0;
+		stats.storageGap = 0;
+		stats.storageUnknown = 0;
+		stats.storageNotRecording = 0;
+		stats.withdrawals = 0;
 		java.util.Arrays.fill(stats.mergeDistance, 0);
 		dirty = true;
 	}
@@ -614,6 +677,7 @@ public final class Tracker {
 				clearWorldState();
 				lastLevel = null;
 			}
+			inventory.forget();
 			return;
 		}
 		if (level != lastLevel) {
@@ -626,6 +690,7 @@ public final class Tracker {
 		checkWatches(level, player);
 		trackItems(level, player);
 		resolveCandidates(false);
+		inventory.tick(player.getInventory(), tick, countsHere(level) && cfg.countInventory, mc.screen != null);
 		toasts.tick(tick);
 		takenByPacket.values().removeIf(t -> tick - t > 100);
 		measureMergeDistance();
@@ -645,6 +710,7 @@ public final class Tracker {
 		resolveCandidates(true);
 		// leaving the server ends the recording, so it is saved to the statistics
 		stopRecording(Minecraft.getInstance(), false);
+		inventory.reset();
 		clearWorldState();
 		lastLevel = null;
 	}
@@ -910,14 +976,14 @@ public final class Tracker {
 			return;
 		}
 		takenByPacket.put(itemEntityId, tick);
-		if (collectorId != mc.player.getId() || !countsHere(mc.level) || proto.isEmpty()) {
-			return;
+		if (collectorId != mc.player.getId() || !countsHere(mc.level) || proto.isEmpty() || !ModConfig.get().groundPickups) {
+			return; // with the storage notices, what is picked up counts from them (or from the inventory)
 		}
 		stats.packetPickups++;
 		if (late) {
 			stats.latePacketPickups++;
 		}
-		collect(proto, amount);
+		collect(proto, amount, "줍기 신호");
 	}
 
 	/** Called when an entity leaves the client world (Fabric's ClientEntityEvents.ENTITY_UNLOAD). */
@@ -955,7 +1021,7 @@ public final class Tracker {
 		if (distSqr > ITEM_TRACK_RANGE * ITEM_TRACK_RANGE) {
 			return;
 		}
-		if (!countsHere(level)) {
+		if (!countsHere(level) || !ModConfig.get().groundPickups) {
 			return;
 		}
 
@@ -1102,6 +1168,9 @@ public final class Tracker {
 			if (!stack.isEmpty()) {
 				t.proto = stack.copyWithCount(1);
 				observe(t, stack.getCount(), tick);
+				if (t.lastSeen < 0 || tick - t.lastSeen > 1) {
+					seen(t.proto); // when it shows up (not every tick)
+				}
 			}
 			t.lastSeen = tick;
 			AABB box = e.getBoundingBox();
@@ -1184,7 +1253,7 @@ public final class Tracker {
 			return;
 		}
 		stats.fallbackPickups++;
-		collect(c.proto, c.count - merged);
+		collect(c.proto, c.count - merged, "옆에서 사라짐");
 	}
 
 	/**
@@ -1196,12 +1265,20 @@ public final class Tracker {
 		if (c.fresh || !mergeOptions(c).isEmpty()) {
 			magnetSeen(c.tick);
 			stats.magnetPickups++;
-			collect(c.proto, amount);
+			collect(c.proto, amount, "자석 범위에서 사라짐");
 		} else if (c.tick <= magnetUntil) {
 			stats.magnetPickups++;
-			collect(c.proto, amount);
+			collect(c.proto, amount, "자석 범위에서 사라짐");
 		} else {
-			magnetWaiting.add(new Waiting(c.proto, amount, c.tick));
+			// already in the inventory (it grew right then): it was ours
+			int arrived = Math.min(amount, inventory.unexplained(keyOf(c.proto)));
+			if (arrived > 0) {
+				stats.magnetPickups++;
+				collect(c.proto, arrived, "자석 범위에서 사라짐, 인벤토리에 들어옴");
+			}
+			if (amount > arrived) {
+				magnetWaiting.add(new Waiting(c.proto, amount - arrived, c.tick));
+			}
 		}
 	}
 
@@ -1217,7 +1294,7 @@ public final class Tracker {
 			magnetUntil = Math.max(magnetUntil, when + MAGNET_KEEP_TICKS);
 			for (Waiting w : magnetWaiting) {
 				stats.magnetPickups++;
-				collect(w.proto(), w.amount());
+				collect(w.proto(), w.amount(), "자석 범위에서 사라짐 (자석펫 확인)");
 			}
 			magnetWaiting.clear();
 		}
@@ -1341,9 +1418,172 @@ public final class Tracker {
 		return c.count - need;
 	}
 
-	private void collect(ItemStack proto, int amount) {
-		if (amount <= 0 || !recording) {
+	/**
+	 * A pickup from the ground: counted (unless it showed up in the inventory first and was counted then), and
+	 * remembered so it is not counted again when it shows up there.
+	 */
+	private void collect(ItemStack proto, int amount, String how) {
+		String key = keyOf(proto);
+		int already = inventory.alreadyCounted(key, amount);
+		String name = proto.getHoverName().getString();
+		if (already > 0) {
+			note(name + " " + already + "개 · 안 셈: 인벤토리에 먼저 들어와서 이미 셈 (" + how + ")");
+		}
+		int left = amount - already;
+		if (count(proto, left)) {
+			inventory.pickedUp(key, left, tick);
+			note(name + " +" + left + " · " + how);
+		}
+	}
+
+	// ------------------------------------------------------------------ the item storage's notices
+
+	/**
+	 * Every line shown above the hotbar comes here (see GuiMixin). "[아이템 저장소] 다이아몬드 1개 수납! (270/30,000)"
+	 * counts as picked up; "... N개 인출" means what comes into the inventory next was in the storage.
+	 */
+	public void onOverlayMessage(Component message) {
+		try {
+			if (message == null) {
+				return;
+			}
+			String text = StorageNotice.clean(message.getString());
+			if (!StorageNotice.isStorage(text)) {
+				return;
+			}
+			int out = StorageNotice.takenOut(text);
+			if (out > 0) {
+				stats.withdrawals++;
+				inventory.withdrawn(out, tick);
+				note("저장소에서 " + out + "개 인출 · 곧 인벤토리에 들어오는 건 안 셈");
+				return;
+			}
+			StorageNotice.Stored stored = StorageNotice.stored(text);
+			if (stored != null) {
+				onStored(stored, text);
+			}
+		} catch (RuntimeException e) {
+			MiningTrackerClient.LOGGER.warn("could not read a storage notice", e);
+		}
+	}
+
+	private void onStored(StorageNotice.Stored s, String text) {
+		String what = s.name() + " " + s.amount() + "개";
+		if (s.balance() >= 0) {
+			Long before = storageBalances.put(s.name() + "|" + s.max(), s.balance());
+			if (before != null && before == s.balance()) {
+				stats.storageRepeats++;
+				note(what + " · 안 셈: 같은 알림이 또 옴 (저장소 개수 " + s.balance() + " 그대로)");
+				return;
+			}
+			if (before != null && s.balance() - before > s.amount()) {
+				long gap = s.balance() - before - s.amount();
+				stats.storageGap += gap;
+				note(s.name() + " · 저장소 개수가 알림보다 " + gap + "개 더 늘었음 (알림을 놓쳤거나 직접 넣은 것, 안 셈)");
+			}
+		} else {
+			long now = System.currentTimeMillis();
+			if (text.equals(lastNotice) && now - lastNoticeAt < 1500) {
+				stats.storageRepeats++;
+				note(what + " · 안 셈: 같은 알림이 1.5초 안에 또 옴");
+				return;
+			}
+			lastNotice = text;
+			lastNoticeAt = now;
+		}
+		ClientLevel level = Minecraft.getInstance().level;
+		if (level == null || !countsHere(level)) {
+			stats.storageNotRecording++;
+			note(what + " · 안 셈: 기록 중이 아님");
 			return;
+		}
+		stats.storageNotices++;
+		stats.storageItems += s.amount();
+		collect(protoFor(s.name()), s.amount(), "저장소 알림" + (s.balance() >= 0 ? " (저장소 " + s.balance() + "개)" : ""));
+	}
+
+	/**
+	 * An item for a name in a storage notice: one seen with that name lately (server items keep their look), one
+	 * the game calls that, or else paper with that name.
+	 */
+	private ItemStack protoFor(String name) {
+		ItemStack seen = seenByName.get(name);
+		if (seen == null) {
+			seen = inventory.protoNamed(name);
+		}
+		if (seen != null) {
+			return seen;
+		}
+		Item item = itemNamed(name);
+		if (item != null) {
+			return new ItemStack(item);
+		}
+		stats.storageUnknown++;
+		note(name + " · 이 이름의 아이템을 못 찾아서 종이 아이콘으로 셈");
+		ItemStack paper = new ItemStack(Items.PAPER);
+		paper.set(DataComponents.CUSTOM_NAME, Component.literal(name));
+		return paper;
+	}
+
+	private Item itemNamed(String name) {
+		if (itemsByName == null) {
+			itemsByName = new HashMap<>();
+			for (Item item : BuiltInRegistries.ITEM) {
+				itemsByName.putIfAbsent(new ItemStack(item).getHoverName().getString(), item);
+			}
+		}
+		return itemsByName.get(name);
+	}
+
+	/** Remembers an item lying near the player by its name, for the storage notices. */
+	private void seen(ItemStack proto) {
+		if (seenByName.size() > 500) {
+			seenByName.clear();
+		}
+		seenByName.put(proto.getHoverName().getString(), proto);
+	}
+
+	/** A line for /광질 진단 최근. */
+	void note(String text) {
+		recent.addLast(LocalTime.now().format(CLOCK) + " " + text);
+		while (recent.size() > RECENT_KEEP) {
+			recent.pollFirst();
+		}
+	}
+
+	/** What was decided lately and why, oldest first. */
+	List<String> recentNotes() {
+		return new ArrayList<>(recent);
+	}
+
+	/**
+	 * A magnet pickup still waiting for a pet to be seen, of this item: it just reached the inventory, so it was
+	 * ours. Counts whole waiting pickups up to {@code max}; returns how many items that was.
+	 */
+	private int claimWaiting(String key, int max) {
+		int claimed = 0;
+		for (ListIterator<Waiting> it = magnetWaiting.listIterator(); it.hasNext() && claimed < max; ) {
+			Waiting w = it.next();
+			if (!keyOf(w.proto()).equals(key)) {
+				continue;
+			}
+			int take = Math.min(w.amount(), max - claimed);
+			if (take == w.amount()) {
+				it.remove();
+			} else {
+				it.set(new Waiting(w.proto(), w.amount() - take, w.tick()));
+			}
+			claimed += take;
+			stats.magnetPickups++;
+			count(w.proto(), take);
+		}
+		return claimed;
+	}
+
+	/** Adds picked-up items to the board, the recording and the pickup toasts. False when not recording. */
+	private boolean count(ItemStack proto, int amount) {
+		if (amount <= 0 || !recording) {
+			return false;
 		}
 		String key = keyOf(proto);
 		ItemTally t = items.get(key);
@@ -1373,6 +1613,12 @@ public final class Tracker {
 		if (!t.other || ModConfig.get().toastOthers) {
 			toasts.push(key, t.icon, t.name, amount, t.count, tick);
 		}
+		return true;
+	}
+
+	/** The inventory watch, for /광질 진단. */
+	InventoryWatch inventoryWatch() {
+		return inventory;
 	}
 
 	private static boolean isOther(ItemStack stack) {

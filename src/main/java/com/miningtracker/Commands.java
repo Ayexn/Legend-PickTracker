@@ -61,7 +61,8 @@ public final class Commands {
 					Tracker.INSTANCE.requestStats();
 					return 1;
 				}))
-				.then(literal("진단").executes(c -> diagnose(c.getSource()))));
+				.then(literal("진단").executes(c -> diagnose(c.getSource()))
+						.then(literal("최근").executes(c -> recent(c.getSource())))));
 	}
 
 	private static int start(FabricClientCommandSource source) {
@@ -105,22 +106,56 @@ public final class Commands {
 			lines.add(" 이곳 자동 기록: " + (Tracker.isAutoPlace(level) ? "켜짐" : "꺼짐") + " · 위치 키: " + Tracker.placeKey(level));
 		}
 		Tracker.Stats s = tracker.stats;
-		lines.add(" 줍기 신호로 센 획득: " + s.packetPickups + "번"
-				+ (s.latePacketPickups > 0 ? " (사라진 뒤에 온 신호 " + s.latePacketPickups + "번)" : ""));
-		lines.add(" 옆에서 사라진 걸로 센 획득: " + s.fallbackPickups + "번");
-		lines.add(" 자석 범위(5칸)에서 사라진 걸로 센 획득: " + s.magnetPickups + "번"
-				+ (s.magnetUnconfirmed > 0 ? " (자석이 안 보여서 안 센 것 " + s.magnetUnconfirmed + "번)" : ""));
-		lines.add(" 안 센 것: 합쳐짐 " + s.mergeSkips + ", 청소 " + s.cleanupSkips + ", 오래 놓여 있음 " + s.longReachSkips
-				+ ", 조금 떨어져서 사라짐 " + s.notNearSkips + ", 다른 사람 " + s.otherPlayerSkips + ", 용암·불 " + s.lavaSkips);
-		long[] md = s.mergeDistance;
-		lines.add(" 합쳐질 때 거리: 1칸 안 " + md[0] + "번, 1~2칸 " + md[1] + "번, 2~3칸 " + md[2] + "번, 3칸 넘게 " + md[3] + "번");
+		lines.add(" 세는 방식: 저장소 알림" + (cfg.countInventory ? " + 인벤토리" : "")
+				+ (cfg.groundPickups ? " + 땅 아이템 짐작" : " (땅 아이템 짐작은 꺼짐)"));
+		lines.add(" 저장소 알림으로 센 획득: " + s.storageNotices + "번 (" + s.storageItems + "개)"
+				+ (s.storageRepeats > 0 ? " · 같은 알림이라 뺀 것 " + s.storageRepeats + "번" : "")
+				+ (s.storageNotRecording > 0 ? " · 기록 중이 아니라 뺀 것 " + s.storageNotRecording + "번" : ""));
+		if (s.storageGap > 0 || s.storageUnknown > 0 || s.withdrawals > 0) {
+			lines.add(" 저장소 개수가 알림보다 더 늘어난 것: " + s.storageGap + "개 (안 셈) · 이름을 몰라 종이로 센 것: "
+					+ s.storageUnknown + "번 · 인출: " + s.withdrawals + "번");
+		}
+		InventoryWatch inv = tracker.inventoryWatch();
+		lines.add(" 인벤토리로 바로 들어온 걸로 센 획득: " + inv.counted + "번 (" + inv.countedItems + "개)"
+				+ (cfg.countInventory ? "" : " (설정에서 꺼짐)")
+				+ (inv.skipped > 0 ? " · 획득이 아니라서 안 센 인벤토리 변화 " + inv.skipped + "번" : "")
+				+ (inv.withdrawnItems > 0 ? " · 인출한 것 " + inv.withdrawnItems + "개" : ""));
+		if (cfg.groundPickups) {
+			lines.add(" 줍기 신호로 센 획득: " + s.packetPickups + "번"
+					+ (s.latePacketPickups > 0 ? " (사라진 뒤에 온 신호 " + s.latePacketPickups + "번)" : ""));
+			lines.add(" 옆에서 사라진 걸로 센 획득: " + s.fallbackPickups + "번");
+			lines.add(" 자석 범위(5칸)에서 사라진 걸로 센 획득: " + s.magnetPickups + "번"
+					+ (s.magnetUnconfirmed > 0 ? " (자석이 안 보여서 안 센 것 " + s.magnetUnconfirmed + "번)" : ""));
+			lines.add(" 안 센 것: 합쳐짐 " + s.mergeSkips + ", 청소 " + s.cleanupSkips + ", 오래 놓여 있음 " + s.longReachSkips
+					+ ", 조금 떨어져서 사라짐 " + s.notNearSkips + ", 다른 사람 " + s.otherPlayerSkips + ", 용암·불 " + s.lavaSkips);
+			long[] md = s.mergeDistance;
+			lines.add(" 합쳐질 때 거리: 1칸 안 " + md[0] + "번, 1~2칸 " + md[1] + "번, 2~3칸 " + md[2] + "번, 3칸 넘게 " + md[3] + "번");
+		}
 		lines.add(" 주변 블록으로 센 블록(3x3 등): " + s.neighborBlocks + "개");
 		lines.add(" 서버가 되돌린 블록: " + s.restoredBlocks + "개 (그중 서버가 바로 다시 깨서 다시 센 것 " + s.rebrokenBlocks + "개)");
+		lines.add(" 무엇을 왜 세고 안 셌는지: /광질 진단 최근");
 		for (String line : lines) {
 			source.sendFeedback(Component.literal(line));
 		}
 		return 1;
 	}
+
+	/** The last decisions (counted or not, and why), oldest first. */
+	private static int recent(FabricClientCommandSource source) {
+		List<String> notes = Tracker.INSTANCE.recentNotes();
+		int from = Math.max(0, notes.size() - RECENT_SHOWN);
+		source.sendFeedback(Component.literal("[광질 측정] 최근 판정 " + (notes.size() - from) + "개 (위가 오래된 것)"));
+		if (notes.isEmpty()) {
+			source.sendFeedback(Component.literal(" 아직 없어요. 광질하면서 저장소 알림이 뜨면 여기 쌓여요."));
+		}
+		for (String note : notes.subList(from, notes.size())) {
+			source.sendFeedback(Component.literal(" " + note));
+		}
+		return 1;
+	}
+
+	/** Lines /광질 진단 최근 shows. */
+	private static final int RECENT_SHOWN = 20;
 
 	private static int reply(FabricClientCommandSource source, String text) {
 		source.sendFeedback(Component.literal("[광질 측정] " + text));

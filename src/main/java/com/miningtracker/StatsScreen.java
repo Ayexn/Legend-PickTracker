@@ -114,7 +114,7 @@ public final class StatsScreen extends PanelScreen {
 		}
 	}
 
-	private int tab = WEEK;
+	private int tab = TODAY;
 	/** A month opened from 전체, or null. */
 	private YearMonth month;
 	/** The day being shown, or null for all the days of the tab. */
@@ -145,6 +145,7 @@ public final class StatsScreen extends PanelScreen {
 		super(Component.literal("광질 통계"), parent);
 		// server items carried now: their old records get the right icon too
 		History.learnLooks(Minecraft.getInstance().player);
+		show(TODAY); // opens on today
 	}
 
 	// ------------------------------------------------------------------ layout
@@ -306,9 +307,9 @@ public final class StatsScreen extends PanelScreen {
 		}
 	}
 
-	/** 홈, in the middle of the top row: back to how the statistics open (7일). Greyed out when already there. */
+	/** 홈, in the middle of the top row: back to how the statistics open (오늘). Greyed out when already there. */
 	private void drawHomeButton(GuiGraphics g, Theme t, int w) {
-		boolean home = tab == WEEK && day == null && month == null;
+		boolean home = tab == TODAY && LocalDate.now().equals(day) && month == null;
 		int bw = 7 + 3 + this.font.width("홈") + 12;
 		int x = (w - bw) / 2;
 		boolean hover = !home && hovered(x, 4, bw, SEG_H);
@@ -317,7 +318,7 @@ public final class StatsScreen extends PanelScreen {
 		house(g, x + 6, 7, color);
 		t.text(g, this.font, "홈", x + 6 + 7 + 3, 7, color);
 		if (!home) {
-			hits.add(new Hit(x, 4, x + bw, 4 + SEG_H, () -> show(WEEK)));
+			hits.add(new Hit(x, 4, x + bw, 4 + SEG_H, () -> show(TODAY)));
 		}
 	}
 
@@ -907,7 +908,7 @@ public final class StatsScreen extends PanelScreen {
 		}
 		clearArmedAt = 0;
 		History.clear();
-		show(WEEK);
+		show(TODAY);
 	}
 
 	// ------------------------------------------------------------------ helpers

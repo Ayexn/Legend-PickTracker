@@ -7,9 +7,15 @@ import org.lwjgl.glfw.GLFW;
 
 import java.util.List;
 
-/** Drag the board and the toasts to move them, scroll over them to resize. ESC saves. */
+/**
+ * Drag the board and the toasts to move them; drag their border or a corner to resize them (the opposite side stays
+ * put), or scroll over them. ESC saves.
+ */
 public final class EditHudScreen extends Screen {
 	private enum Target { NONE, BOARD, TOASTS }
+
+	/** How close to a box's frame the mouse takes the frame (resize) instead of the box (move). */
+	private static final int EDGE = 4;
 
 	/** Screen to go back to when closing (the settings screen), or null to go back to the game. */
 	private final Screen parent;
@@ -19,6 +25,15 @@ public final class EditHudScreen extends Screen {
 	private double grabY;
 	private float[] boardRect = new float[4];
 	private float[] toastRect = new float[4];
+	/** The box whose frame is being dragged, and which sides: -1 left/top, 1 right/bottom, 0 neither. */
+	private Target resizing = Target.NONE;
+	private int sideX;
+	private int sideY;
+	/** The box and its size when the frame was taken, and how far from the dragged side the mouse was. */
+	private float[] startRect;
+	private float startScale;
+	private double offsetX;
+	private double offsetY;
 
 	public EditHudScreen(Screen parent) {
 		super(Component.literal("광질 측정 HUD 편집"));
@@ -53,11 +68,14 @@ public final class EditHudScreen extends Screen {
 		int toastColor = color(theme, Target.TOASTS, toastRect, mouseX, mouseY);
 		outline(g, boardRect, boardColor);
 		outline(g, toastRect, toastColor);
+		handles(g, Target.BOARD, boardRect, boardColor, mouseX, mouseY);
+		handles(g, Target.TOASTS, toastRect, toastColor, mouseX, mouseY);
 		label(g, theme, "집계판 · " + percent(boardScale(cfg)), boardRect, boardColor);
 		label(g, theme, "획득 알림 · " + percent(cfg.toastScale), toastRect, toastColor);
 
-		String hint1 = "끌어서 위치 이동  ·  마우스 휠로 크기 조절";
-		String hint2 = parent != null ? "R: 기본 위치로  ·  ESC: 저장하고 설정으로" : "R: 기본 위치로  ·  ESC: 저장하고 닫기";
+		String hint1 = "끌어서 위치 이동  ·  테두리나 모서리를 끌어서 크기 조절";
+		String hint2 = (parent != null ? "휠로도 크기 조절  ·  R: 기본 위치로  ·  ESC: 저장하고 설정으로"
+				: "휠로도 크기 조절  ·  R: 기본 위치로  ·  ESC: 저장하고 닫기");
 		int hw = Math.max(this.font.width(hint1), this.font.width(hint2)) + 16;
 		int hx = (this.width - hw) / 2;
 		int top = isBar(cfg) ? Math.max(6, (int) (boardRect[1] + boardRect[3]) + 16) : 6;
@@ -68,10 +86,64 @@ public final class EditHudScreen extends Screen {
 
 	/** Accent colour; lighter under the mouse, white while dragging. */
 	private int color(Theme theme, Target target, float[] rect, int mouseX, int mouseY) {
-		if (dragging == target) {
+		if (dragging == target || resizing == target) {
 			return 0xFFFFFFFF;
 		}
-		return inside(rect, mouseX, mouseY) ? Theme.mix(theme.accent, 0xFFFFFFFF, 0.5f) : theme.accent;
+		boolean busy = dragging != Target.NONE || resizing != Target.NONE;
+		boolean over = inside(rect, mouseX, mouseY) || edgeAt(rect, mouseX, mouseY) != null;
+		return !busy && over ? Theme.mix(theme.accent, 0xFFFFFFFF, 0.5f) : theme.accent;
+	}
+
+	/**
+	 * Small squares on the four corners of the frame, to show it can be pulled. The side under the mouse (or being
+	 * pulled) is drawn thicker, in white.
+	 */
+	private void handles(GuiGraphics g, Target target, float[] r, int color, int mouseX, int mouseY) {
+		int x1 = (int) Math.floor(r[0]) - 2;
+		int y1 = (int) Math.floor(r[1]) - 2;
+		int x2 = (int) Math.ceil(r[0] + r[2]) + 2;
+		int y2 = (int) Math.ceil(r[1] + r[3]) + 2;
+		int[] side = resizing == target ? new int[]{sideX, sideY}
+				: dragging == Target.NONE && resizing == Target.NONE ? edgeAt(r, mouseX, mouseY) : null;
+		if (side != null) {
+			int white = 0xFFFFFFFF;
+			if (side[0] < 0) {
+				g.fill(x1 - 1, y1, x1 + 1, y2, white);
+			} else if (side[0] > 0) {
+				g.fill(x2 - 1, y1, x2 + 1, y2, white);
+			}
+			if (side[1] < 0) {
+				g.fill(x1, y1 - 1, x2, y1 + 1, white);
+			} else if (side[1] > 0) {
+				g.fill(x1, y2 - 1, x2, y2 + 1, white);
+			}
+		}
+		for (int[] c : new int[][]{{x1, y1, -1, -1}, {x2 - 1, y1, 1, -1}, {x1, y2 - 1, -1, 1}, {x2 - 1, y2 - 1, 1, 1}}) {
+			boolean hot = side != null && side[0] == c[2] && side[1] == c[3];
+			int size = hot ? 3 : 2;
+			g.fill(c[0] - size, c[1] - size, c[0] + size + 1, c[1] + size + 1, hot ? 0xFFFFFFFF : color);
+		}
+	}
+
+	/**
+	 * Which side of the frame the mouse is on: {x, y} with -1 for left/top, 1 for right/bottom, 0 for neither
+	 * (both set on a corner), or null when it is not on the frame.
+	 */
+	private static int[] edgeAt(float[] r, double x, double y) {
+		double left = r[0] - 2;
+		double top = r[1] - 2;
+		double right = r[0] + r[2] + 2;
+		double bottom = r[1] + r[3] + 2;
+		if (r[2] <= 0 || x < left - EDGE || x > right + EDGE || y < top - EDGE || y > bottom + EDGE) {
+			return null;
+		}
+		double dl = Math.abs(x - left);
+		double dr = Math.abs(x - right);
+		double dt = Math.abs(y - top);
+		double db = Math.abs(y - bottom);
+		int sx = Math.min(dl, dr) > EDGE ? 0 : dl <= dr ? -1 : 1;
+		int sy = Math.min(dt, db) > EDGE ? 0 : dt <= db ? -1 : 1;
+		return sx == 0 && sy == 0 ? null : new int[]{sx, sy};
 	}
 
 	/**
@@ -111,9 +183,33 @@ public final class EditHudScreen extends Screen {
 		return Math.round(scale / ModConfig.DEFAULT_SCALE * 100f) + "%";
 	}
 
+	private float[] rectOf(Target target) {
+		return target == Target.BOARD ? boardRect : toastRect;
+	}
+
+	private float scaleOf(Target target) {
+		ModConfig cfg = ModConfig.get();
+		return target == Target.BOARD ? boardScale(cfg) : cfg.toastScale;
+	}
+
 	@Override
 	public boolean mouseClicked(double mouseX, double mouseY, int button) {
 		if (button == 0) {
+			// the frame first: pressing on it resizes
+			for (Target target : new Target[]{Target.BOARD, Target.TOASTS}) {
+				float[] r = rectOf(target);
+				int[] side = edgeAt(r, mouseX, mouseY);
+				if (side != null) {
+					resizing = target;
+					sideX = side[0];
+					sideY = side[1];
+					startRect = r.clone();
+					startScale = scaleOf(target);
+					offsetX = mouseX - (sideX < 0 ? r[0] : r[0] + r[2]);
+					offsetY = mouseY - (sideY < 0 ? r[1] : r[1] + r[3]);
+					return true;
+				}
+			}
 			if (inside(boardRect, mouseX, mouseY)) {
 				dragging = Target.BOARD;
 				grabX = mouseX - boardRect[0];
@@ -133,6 +229,10 @@ public final class EditHudScreen extends Screen {
 	@Override
 	public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
 		ModConfig cfg = ModConfig.get();
+		if (resizing != Target.NONE) {
+			resize(cfg, mouseX - offsetX, mouseY - offsetY);
+			return true;
+		}
 		if (dragging == Target.BOARD) {
 			float x = (float) (mouseX - grabX);
 			float y = (float) (mouseY - grabY);
@@ -154,8 +254,45 @@ public final class EditHudScreen extends Screen {
 		return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
 	}
 
+	/**
+	 * The pulled side (or corner) is now at {@code edgeX}, {@code edgeY}: the box takes the size that puts it there
+	 * (the same shape, so a corner follows the farther of the two), and the opposite side stays where it was.
+	 */
+	private void resize(ModConfig cfg, double edgeX, double edgeY) {
+		float[] r0 = startRect;
+		double fx = sideX > 0 ? (edgeX - r0[0]) / r0[2] : sideX < 0 ? (r0[0] + r0[2] - edgeX) / r0[2] : 0;
+		double fy = sideY > 0 ? (edgeY - r0[1]) / r0[3] : sideY < 0 ? (r0[1] + r0[3] - edgeY) / r0[3] : 0;
+		double factor = sideX != 0 && sideY != 0 ? Math.max(fx, fy) : sideX != 0 ? fx : fy;
+		float scale = ModConfig.clampScale(Math.round(startScale * factor * 100) / 100f);
+		float k = scale / startScale;
+		float w = r0[2] * k;
+		float h = r0[3] * k;
+		float left = sideX < 0 ? r0[0] + r0[2] - w : r0[0];
+		float top = sideY < 0 ? r0[1] + r0[3] - h : r0[1];
+		if (resizing == Target.BOARD) {
+			if (isBar(cfg)) {
+				cfg.barScale = scale;
+				// the bar is placed by its middle: keep the side that is not pulled where it was
+				cfg.barCenterX = sideX == 0 ? r0[0] + r0[2] / 2f : left + w / 2f;
+				cfg.barY = top;
+			} else {
+				cfg.panelScale = scale;
+				cfg.panelX = left;
+				cfg.panelY = top;
+			}
+		} else {
+			cfg.toastScale = scale;
+			cfg.toastRight = this.width - (left + w);
+			cfg.toastY = top;
+		}
+	}
+
 	@Override
 	public boolean mouseReleased(double mouseX, double mouseY, int button) {
+		if (resizing != Target.NONE) {
+			dragging = resizing; // keep what was drawn, as after a move
+			resizing = Target.NONE;
+		}
 		if (dragging != Target.NONE) {
 			ModConfig cfg = ModConfig.get();
 			// keep what was actually drawn (it is kept on the screen)
