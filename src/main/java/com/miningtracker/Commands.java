@@ -108,6 +108,8 @@ public final class Commands {
 		lines.add(" 줍기 신호로 센 획득: " + s.packetPickups + "번"
 				+ (s.latePacketPickups > 0 ? " (사라진 뒤에 온 신호 " + s.latePacketPickups + "번)" : ""));
 		lines.add(" 옆에서 사라진 걸로 센 획득: " + s.fallbackPickups + "번");
+		lines.add(" 자석 범위(5칸)에서 사라진 걸로 센 획득: " + s.magnetPickups + "번"
+				+ (s.magnetUnconfirmed > 0 ? " (자석이 안 보여서 안 센 것 " + s.magnetUnconfirmed + "번)" : ""));
 		lines.add(" 안 센 것: 합쳐짐 " + s.mergeSkips + ", 청소 " + s.cleanupSkips + ", 오래 놓여 있음 " + s.longReachSkips
 				+ ", 조금 떨어져서 사라짐 " + s.notNearSkips + ", 다른 사람 " + s.otherPlayerSkips + ", 용암·불 " + s.lavaSkips);
 		long[] md = s.mergeDistance;

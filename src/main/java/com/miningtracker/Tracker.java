@@ -51,6 +51,12 @@ import java.util.Set;
  * item, was picked up by someone closer, burned, or had been lying in pickup range for a long time
  * (then it was cleaned up, not picked up). Merges are told apart by amount: an item that grew nearby
  * explains at most as many vanished items as it grew by, and whatever is left was picked up.
+ *
+ * <p>Magnet pets pull items in from up to 5 blocks, and the game may show such an item where it was rather than
+ * where the pet took it. So an item that vanishes within that range counts as well, merges taken out the same
+ * way. One that had been lying there a long time counts only once items keep coming in from a distance (a pet
+ * at work); without a pet it was cleaned up. Merges are matched on the side of whichever player is closer, so
+ * another player mining next to us neither takes our merges nor gives us theirs.
  */
 public final class Tracker {
 	public static final Tracker INSTANCE = new Tracker();
@@ -79,8 +85,6 @@ public final class Tracker {
 	 */
 	private static final int MERGE_WINDOW_BEFORE = 1;
 	private static final int MERGE_WINDOW_AFTER = 5;
-	/** Usually the growth is seen two ticks after the removal (next server tick, read at the end of ours). */
-	private static final int MERGE_USUAL_DELAY = 2;
 	/** Wait this long before deciding, so a merge has shown up as another item growing. */
 	private static final int RESOLVE_DELAY_TICKS = MERGE_WINDOW_AFTER + 1;
 	/**
@@ -89,12 +93,28 @@ public final class Tracker {
 	 */
 	private static final int SETTLE_TICKS = RESOLVE_DELAY_TICKS + MERGE_WINDOW_BEFORE + MERGE_WINDOW_AFTER;
 	/**
-	 * How far apart items can merge. Vanilla merges items within 0.75 blocks, but servers can set it higher
-	 * (spigot.yml merge-radius), so this covers up to about 4 blocks. Merges are matched by amount, so looking
-	 * further does not make pickups disappear.
+	 * How far apart items can merge, for items that vanished by the player. Vanilla merges items within 0.75
+	 * blocks and servers can set it higher (spigot.yml merge-radius); also, the game can show an item behind
+	 * where the server has it (a magnet pet moving it). Merges are matched by amount, so looking further does not
+	 * make pickups disappear.
 	 */
-	private static final double MERGE_REACH = 4.5;
+	private static final double MERGE_REACH = 10.0;
+	/** The same for items that vanished away from the player (not ours), so they do not take our merges. */
+	private static final double FAR_MERGE_REACH = 4.5;
 	private static final double MERGE_REACH_Y = 3.0;
+	/** Magnet pets pull items in from 5 blocks: pickups can vanish this far from the player (with a margin). */
+	private static final double MAGNET_REACH = 5.5;
+	private static final double MAGNET_REACH_Y = 3.0;
+	/** An item that was within that range this recently still counts as pulled in when it vanishes. */
+	private static final int MAGNET_RECENT_TICKS = 30;
+	/** Within that range this long without coming to the player: not being pulled in, so not picked up. */
+	private static final int MAGNET_LYING_TICKS = 100;
+	/** A magnet pet is taken to be at work after this many items came in from a distance, at different moments... */
+	private static final int MAGNET_CONFIRM = 3;
+	/** ... within this time ... */
+	private static final int MAGNET_WINDOW_TICKS = 600;
+	/** ... and is still taken to be at work this long after the last one. */
+	private static final int MAGNET_KEEP_TICKS = 2400;
 	/** Items are followed this far from the player, so the item another one merged into is seen too. */
 	private static final double ITEM_TRACK_RANGE = 16.0;
 	/** Count increases are kept this long for matching. */
@@ -155,6 +175,10 @@ public final class Tracker {
 		public long restoredBlocks;
 		/** Put back by the server, then broken by the server right after: counted again. */
 		public long rebrokenBlocks;
+		/** Vanished within magnet range, away from the player, and counted (a magnet pet pulled them in). */
+		public long magnetPickups;
+		/** Old items that vanished within magnet range while no pet was seen at work: not counted. */
+		public long magnetUnconfirmed;
 		/**
 		 * When an item grew (something merged into it), how far away the closest same item that vanished then
 		 * was: up to 1 block, 1-2, 2-3, more. Shows how far this server merges items (vanilla: under 1 block).
@@ -203,6 +227,9 @@ public final class Tracker {
 		long nearSince = -1;
 		/** Continuously in pickup range since this tick, or -1. */
 		long pickupRangeSince = -1;
+		/** Last tick it was within magnet range, and continuously since when (or -1). */
+		long lastInMagnetRange = Long.MIN_VALUE / 2;
+		long magnetRangeSince = -1;
 		long removedAt = -1;
 
 		TrackedItem(int id) {
@@ -222,6 +249,10 @@ public final class Tracker {
 		final TrackedItem item;
 		final long tick;
 		final int amount;
+		/** Where the item was when it grew. */
+		final Vec3 pos;
+		/** It was closer to this player than to any other player then. */
+		final boolean mine;
 		/** The vanished items this increase explains, and how much of it each one uses. */
 		final Map<Candidate, Integer> users = new LinkedHashMap<>();
 		int used;
@@ -230,6 +261,8 @@ public final class Tracker {
 			this.item = item;
 			this.tick = tick;
 			this.amount = amount;
+			this.pos = item.pos;
+			this.mine = closestToMe(item.pos);
 		}
 
 		int free() {
@@ -264,6 +297,12 @@ public final class Tracker {
 		 * the increase of the item it merged into, so that increase cannot be mistaken for another item's merge.
 		 */
 		final boolean counts;
+		/** Vanished within magnet range, away from the player. */
+		boolean byMagnet;
+		/** It had been on screen only a short while (just dropped, or just came into view). */
+		boolean fresh;
+		/** It was closer to this player than to any other player when it vanished. */
+		boolean mine = true;
 
 		Candidate(int entityId, ItemStack proto, int count, long tick, Vec3 pos, boolean counts) {
 			this.entityId = entityId;
@@ -275,7 +314,9 @@ public final class Tracker {
 		}
 
 		Candidate shadow() {
-			return new Candidate(entityId, proto, count, tick, pos, false);
+			Candidate s = new Candidate(entityId, proto, count, tick, pos, false);
+			s.mine = mine;
+			return s;
 		}
 	}
 
@@ -335,6 +376,16 @@ public final class Tracker {
 	private boolean openSettingsNextTick;
 	private boolean openEditorNextTick;
 	private boolean openStatsNextTick;
+	/** Old items pulled in from a distance before a magnet pet was seen at work: counted once it is. */
+	private final List<Waiting> magnetWaiting = new ArrayList<>();
+	/** When items came in from a distance lately (one entry per tick). */
+	private final ArrayDeque<Long> magnetTimes = new ArrayDeque<>();
+	/** A magnet pet is taken to be at work until this tick. */
+	private long magnetUntil = Long.MIN_VALUE / 2;
+
+	/** A pickup waiting for a magnet pet to be seen at work. */
+	private record Waiting(ItemStack proto, int amount, long tick) {
+	}
 
 	private Tracker() {
 	}
@@ -468,6 +519,7 @@ public final class Tracker {
 		blocks.clear();
 		items.clear();
 		toasts.clear();
+		magnetWaiting.clear();
 		activeTicks = 0;
 		if (recording) {
 			saveSession();
@@ -578,6 +630,13 @@ public final class Tracker {
 		takenByPacket.values().removeIf(t -> tick - t > 100);
 		measureMergeDistance();
 		recentGrowth.removeIf(g -> tick - g.tick > GROWTH_KEEP_TICKS);
+		magnetWaiting.removeIf(w -> {
+			boolean expired = tick - w.tick() > MAGNET_WINDOW_TICKS;
+			if (expired) {
+				stats.magnetUnconfirmed++;
+			}
+			return expired;
+		});
 		recentVanished.removeIf(v -> tick - v.tick > GROWTH_KEEP_TICKS);
 		cleanupTicks.removeIf(t -> tick - t > 20);
 	}
@@ -885,10 +944,13 @@ public final class Tracker {
 		if (takenAt != null && tick - takenAt <= TAKEN_RECENT_TICKS) {
 			return; // the end of a pickup the server told us about
 		}
-		discardsThisTick++;
 		double distSqr = item.distanceToSqr(player);
-		if (distSqr > 64.0) {
-			farDiscardsThisTick++;
+		// a floor cleanup takes items everywhere at once; another player's pickups (next to them) are not that
+		if (!nearOtherPlayer(level, player, item)) {
+			discardsThisTick++;
+			if (distSqr > 64.0) {
+				farDiscardsThisTick++;
+			}
 		}
 		if (distSqr > ITEM_TRACK_RANGE * ITEM_TRACK_RANGE) {
 			return;
@@ -898,20 +960,28 @@ public final class Tracker {
 		}
 
 		Candidate candidate = new Candidate(item.getId(), stack.copyWithCount(1), stack.getCount(), tick, item.position(), true);
+		candidate.mine = closestToMe(item.position());
 		recentVanished.add(candidate);
 		AABB box = item.getBoundingBox();
 		boolean nearNow = box.intersects(nearBox(player));
 		boolean nearRecently = info != null && tick - info.lastNear <= NEAR_RECENT_TICKS;
 		boolean close = box.intersects(closeBox(player));
 		boolean fresh = item.getAge() <= FRESH_TICKS;
+		boolean byMagnet = false;
 		if (!nearNow && !nearRecently && !(fresh && close)) {
-			if (close) {
-				stats.notNearSkips++;
+			boolean inMagnetRange = box.intersects(magnetBox(player))
+					|| info != null && tick - info.lastInMagnetRange <= MAGNET_RECENT_TICKS;
+			boolean lyingInRange = info != null && info.magnetRangeSince >= 0 && tick - info.magnetRangeSince > MAGNET_LYING_TICKS;
+			if (!inMagnetRange || lyingInRange) {
+				if (close) {
+					stats.notNearSkips++;
+				}
+				candidates.add(candidate.shadow());
+				return; // vanished somewhere else (merged with another item, or someone else took it)
 			}
-			candidates.add(candidate.shadow());
-			return; // vanished somewhere else (merged with another item, or someone else took it)
+			byMagnet = true; // a magnet pet may have pulled it in
 		}
-		if (info != null && lyingAround(info, box.intersects(pickupBox(player)))) {
+		if (!byMagnet && info != null && lyingAround(info, box.intersects(pickupBox(player)))) {
 			stats.longReachSkips++;
 			candidates.add(candidate.shadow());
 			return; // it lay next to the player without being picked up, then got cleaned up
@@ -920,11 +990,61 @@ public final class Tracker {
 			stats.lavaSkips++;
 			return;
 		}
-		if (otherPlayerTookIt(level, player, item)) {
+		if (otherPlayerTookIt(level, player, item) || byMagnet && otherPlayerCloser(level, player, item)) {
 			stats.otherPlayerSkips++;
+			candidates.add(candidate.shadow()); // it may have merged instead: let it claim that
 			return;
 		}
+		candidate.byMagnet = byMagnet;
+		candidate.fresh = fresh;
 		candidates.add(candidate);
+	}
+
+	/** True if the spot is closer to this player than to every other player (always true when alone). */
+	private static boolean closestToMe(Vec3 at) {
+		Minecraft mc = Minecraft.getInstance();
+		if (mc.player == null || mc.level == null) {
+			return true;
+		}
+		double mine = mc.player.position().distanceToSqr(at);
+		for (AbstractClientPlayer other : mc.level.players()) {
+			if (other != mc.player && !other.isSpectator() && other.position().distanceToSqr(at) < mine) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** Another player is within magnet range of the item (it may have gone to them). */
+	private static boolean nearOtherPlayer(ClientLevel level, LocalPlayer self, ItemEntity item) {
+		double reach = MAGNET_REACH + 2.0;
+		for (AbstractClientPlayer other : level.players()) {
+			if (other != self && !other.isSpectator() && other.distanceToSqr(item) <= reach * reach) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Another player is closer to the item and within magnet range of it. */
+	private static boolean otherPlayerCloser(ClientLevel level, LocalPlayer self, ItemEntity item) {
+		double mine = self.distanceToSqr(item);
+		double reach = MAGNET_REACH + 1.0;
+		for (AbstractClientPlayer other : level.players()) {
+			if (other == self || other.isSpectator()) {
+				continue;
+			}
+			double d = other.distanceToSqr(item);
+			if (d < mine && d <= reach * reach) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Where a magnet pet takes items from. */
+	private static AABB magnetBox(Player player) {
+		return player.getBoundingBox().inflate(MAGNET_REACH, MAGNET_REACH_Y, MAGNET_REACH);
 	}
 
 	/** Right next to the player. */
@@ -974,14 +1094,15 @@ public final class Tracker {
 	private void trackItems(ClientLevel level, LocalPlayer player) {
 		AABB near = nearBox(player);
 		AABB pickup = pickupBox(player);
+		AABB magnet = magnetBox(player);
 		for (ItemEntity e : level.getEntitiesOfClass(ItemEntity.class, player.getBoundingBox().inflate(ITEM_TRACK_RANGE))) {
 			TrackedItem t = tracked.computeIfAbsent(e.getId(), TrackedItem::new);
 			ItemStack stack = e.getItem();
+			t.pos = e.position(); // first, so a growth seen now is placed where the item is now
 			if (!stack.isEmpty()) {
 				t.proto = stack.copyWithCount(1);
 				observe(t, stack.getCount(), tick);
 			}
-			t.pos = e.position();
 			t.lastSeen = tick;
 			AABB box = e.getBoundingBox();
 			if (box.intersects(near)) {
@@ -999,14 +1120,23 @@ public final class Tracker {
 			} else {
 				t.pickupRangeSince = -1;
 			}
+			if (box.intersects(magnet)) {
+				t.lastInMagnetRange = tick;
+				if (t.magnetRangeSince < 0) {
+					t.magnetRangeSince = tick;
+				}
+			} else {
+				t.magnetRangeSince = -1;
+			}
 		}
 		tracked.values().removeIf(t -> tick - t.lastSeen > 60);
 	}
 
 	/**
 	 * Judges the vanished items once a merge would have shown up. Items that were not ours claim their merges
-	 * first; one of ours with a merge next to it waits a little longer for them, so a pickup is not taken for
-	 * a merge that happened beside it. {@code force}: judge all of them now.
+	 * first, then items that vanished within magnet range (away from the player, so more often merges); one
+	 * that vanished next to the player with a merge beside it waits a little longer for them, so a pickup is not
+	 * taken for a merge that happened beside it. {@code force}: judge all of them now.
 	 */
 	private void resolveCandidates(boolean force) {
 		for (Iterator<Candidate> it = candidates.iterator(); it.hasNext(); ) {
@@ -1018,26 +1148,78 @@ public final class Tracker {
 		}
 		for (Iterator<Candidate> it = candidates.iterator(); it.hasNext(); ) {
 			Candidate c = it.next();
+			if (c.byMagnet && (force || tick - c.tick >= RESOLVE_DELAY_TICKS)) {
+				it.remove();
+				judge(c);
+			}
+		}
+		for (Iterator<Candidate> it = candidates.iterator(); it.hasNext(); ) {
+			Candidate c = it.next();
 			long age = tick - c.tick;
 			if (!force && (age < RESOLVE_DELAY_TICKS || age < SETTLE_TICKS && !mergeOptions(c).isEmpty())) {
 				continue;
 			}
 			it.remove();
-			Long takenAt = takenByPacket.get(c.entityId);
-			if (takenAt != null && takenAt >= c.tick - 1) {
-				continue; // a pickup message came after all and was counted there
+			judge(c);
+		}
+	}
+
+	/** Counts what is left of a vanished item of ours once merges are taken out. */
+	private void judge(Candidate c) {
+		Long takenAt = takenByPacket.get(c.entityId);
+		if (takenAt != null && takenAt >= c.tick - 1) {
+			return; // a pickup message came after all and was counted there
+		}
+		if (cleanupTicks.contains(c.tick)) {
+			stats.cleanupSkips++;
+			return;
+		}
+		int merged = explainByMerges(c);
+		if (merged >= c.count) {
+			stats.mergeSkips++;
+			return; // merged into a neighbouring item, not picked up
+		}
+		if (c.byMagnet) {
+			magnetPickup(c, c.count - merged);
+			return;
+		}
+		stats.fallbackPickups++;
+		collect(c.proto, c.count - merged);
+	}
+
+	/**
+	 * An item pulled in from a distance, merges taken out. Next to merges it counts (the merges around it only
+	 * add up that way), and so does a fresh one (nothing else takes those). An old item on its own counts only
+	 * while a magnet pet is known to be at work: without one it was cleaned up or despawned.
+	 */
+	private void magnetPickup(Candidate c, int amount) {
+		if (c.fresh || !mergeOptions(c).isEmpty()) {
+			magnetSeen(c.tick);
+			stats.magnetPickups++;
+			collect(c.proto, amount);
+		} else if (c.tick <= magnetUntil) {
+			stats.magnetPickups++;
+			collect(c.proto, amount);
+		} else {
+			magnetWaiting.add(new Waiting(c.proto, amount, c.tick));
+		}
+	}
+
+	/** An item came in from a distance: after a few of those, a magnet pet is at work. */
+	private void magnetSeen(long when) {
+		if (magnetTimes.isEmpty() || magnetTimes.peekLast() != when) {
+			magnetTimes.addLast(when);
+		}
+		while (!magnetTimes.isEmpty() && when - magnetTimes.peekFirst() > MAGNET_WINDOW_TICKS) {
+			magnetTimes.pollFirst();
+		}
+		if (magnetTimes.size() >= MAGNET_CONFIRM) {
+			magnetUntil = Math.max(magnetUntil, when + MAGNET_KEEP_TICKS);
+			for (Waiting w : magnetWaiting) {
+				stats.magnetPickups++;
+				collect(w.proto(), w.amount());
 			}
-			if (cleanupTicks.contains(c.tick)) {
-				stats.cleanupSkips++;
-				continue;
-			}
-			int merged = explainByMerges(c);
-			if (merged >= c.count) {
-				stats.mergeSkips++;
-				continue; // merged into a neighbouring item, not picked up
-			}
-			stats.fallbackPickups++;
-			collect(c.proto, c.count - merged);
+			magnetWaiting.clear();
 		}
 	}
 
@@ -1051,7 +1233,7 @@ public final class Tracker {
 			for (Candidate v : recentVanished) {
 				if (v.entityId != g.item.id && v.tick >= g.tick - MERGE_WINDOW_AFTER && v.tick <= g.tick + MERGE_WINDOW_BEFORE
 						&& ItemStack.isSameItemSameComponents(v.proto, g.item.proto)) {
-					best = Math.min(best, Math.max(Math.abs(v.pos.x - g.item.pos.x), Math.abs(v.pos.z - g.item.pos.z)));
+					best = Math.min(best, Math.max(Math.abs(v.pos.x - g.pos.x), Math.abs(v.pos.z - g.pos.z)));
 				}
 			}
 			if (best < Double.MAX_VALUE) {
@@ -1062,26 +1244,30 @@ public final class Tracker {
 
 	/**
 	 * Increases of same items right next to a vanished item, around the time it vanished: where it could have
-	 * merged into. The one closest to the usual timing comes first, then the closest item.
+	 * merged into. The earliest comes first (then the closest item): taking the earliest one that is still free
+	 * leaves the later ones to items that vanished later, so no increase is left over while an item that merged
+	 * goes unexplained.
 	 */
 	private List<Growth> mergeOptions(Candidate c) {
 		long from = c.tick - MERGE_WINDOW_BEFORE;
 		long to = c.tick + MERGE_WINDOW_AFTER;
-		long usual = c.tick + MERGE_USUAL_DELAY;
 		List<Growth> found = new ArrayList<>();
 		for (Growth g : recentGrowth) {
 			TrackedItem other = g.item;
 			if (g.tick < from || g.tick > to || other.id == c.entityId) {
 				continue;
 			}
-			if (Math.abs(other.pos.x - c.pos.x) > MERGE_REACH || Math.abs(other.pos.z - c.pos.z) > MERGE_REACH
-					|| Math.abs(other.pos.y - c.pos.y) > MERGE_REACH_Y || !ItemStack.isSameItemSameComponents(other.proto, c.proto)) {
+			if (g.mine != c.mine) {
+				continue; // merging items are right next to each other: on the same player's side
+			}
+			double reach = c.counts ? MERGE_REACH : FAR_MERGE_REACH;
+			if (Math.abs(g.pos.x - c.pos.x) > reach || Math.abs(g.pos.z - c.pos.z) > reach
+					|| Math.abs(g.pos.y - c.pos.y) > MERGE_REACH_Y || !ItemStack.isSameItemSameComponents(other.proto, c.proto)) {
 				continue;
 			}
 			found.add(g);
 		}
-		found.sort(Comparator.comparingLong((Growth g) -> Math.abs(g.tick - usual))
-				.thenComparingDouble(g -> g.item.pos.distanceToSqr(c.pos)));
+		found.sort(Comparator.comparingLong((Growth g) -> g.tick).thenComparingDouble(g -> g.pos.distanceToSqr(c.pos)));
 		return found;
 	}
 
