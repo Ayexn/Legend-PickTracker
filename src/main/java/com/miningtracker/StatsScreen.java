@@ -377,7 +377,7 @@ public final class StatsScreen extends PanelScreen {
 				String path = outcome.file().getAbsolutePath();
 				Component link = Component.literal(outcome.file().getName()).withStyle(ChatFormatting.UNDERLINE)
 						.withStyle(style -> style.withClickEvent(new ClickEvent(ClickEvent.Action.OPEN_FILE, path)));
-				mc.player.displayClientMessage(Component.literal("[광질 측정] 통계 그림을 저장했어요: ").append(link), false);
+				mc.player.displayClientMessage(Component.literal("[픽트래커] 통계 그림을 저장했어요: ").append(link), false);
 			}
 		} else {
 			notice = "복사하지 못했어요";

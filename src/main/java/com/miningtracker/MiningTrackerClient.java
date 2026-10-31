@@ -13,7 +13,7 @@ import org.slf4j.LoggerFactory;
 
 public final class MiningTrackerClient implements ClientModInitializer {
 	public static final String MOD_ID = "mining-tracker";
-	public static final Logger LOGGER = LoggerFactory.getLogger("광질 측정");
+	public static final Logger LOGGER = LoggerFactory.getLogger("픽트래커");
 
 	@Override
 	@SuppressWarnings("deprecation") // HudRenderCallback still works on 1.21.4 and is the simplest hook
@@ -31,6 +31,6 @@ public final class MiningTrackerClient implements ClientModInitializer {
 		HudRenderCallback.EVENT.register(HudRenderer::onHudRender);
 		ClientCommandRegistrationCallback.EVENT.register(Commands::register);
 
-		LOGGER.info("광질 측정 모드가 켜졌어요");
+		LOGGER.info("픽트래커가 켜졌어요");
 	}
 }

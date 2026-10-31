@@ -96,7 +96,7 @@ public final class Commands {
 		Tracker tracker = Tracker.INSTANCE;
 		ModConfig cfg = ModConfig.get();
 		List<String> lines = new ArrayList<>();
-		lines.add("[광질 측정] 진단");
+		lines.add("[픽트래커] 진단");
 		String state = !tracker.isRecording() ? "기록 안 함"
 				: tracker.isManualSession() ? "기록 중 (직접 시작)" : "기록 중 (자동으로 시작)";
 		lines.add(" 상태: " + state + " · 방식: " + (cfg.autoMode ? "자동" : "수동")
@@ -138,7 +138,7 @@ public final class Commands {
 	private static int recent(FabricClientCommandSource source) {
 		List<String> notes = Tracker.INSTANCE.recentNotes();
 		int from = Math.max(0, notes.size() - RECENT_SHOWN);
-		source.sendFeedback(Component.literal("[광질 측정] 최근 판정 " + (notes.size() - from) + "개 (위가 오래된 것)"));
+		source.sendFeedback(Component.literal("[픽트래커] 최근 판정 " + (notes.size() - from) + "개 (위가 오래된 것)"));
 		if (notes.isEmpty()) {
 			source.sendFeedback(Component.literal(" 아직 없어요. 광질하면서 저장소 알림이 뜨면 여기 쌓여요."));
 		}
@@ -152,13 +152,13 @@ public final class Commands {
 	private static final int RECENT_SHOWN = 20;
 
 	private static int reply(FabricClientCommandSource source, String text) {
-		source.sendFeedback(Component.literal("[광질 측정] " + text));
+		source.sendFeedback(Component.literal("[픽트래커] " + text));
 		return 1;
 	}
 
 	private static int help(FabricClientCommandSource source) {
 		String[] lines = {
-				"[광질 측정] 명령어",
+				"[픽트래커] 명령어",
 				" /광질 설정 — 설정창 열기 (F9)",
 				" /광질 통계 — 날짜별 광질 기록 보기 (F10)",
 				" /광질 시작, /광질 종료 — 기록 직접 시작/끝내기 (F7)",

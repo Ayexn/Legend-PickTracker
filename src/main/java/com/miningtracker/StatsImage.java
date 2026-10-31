@@ -58,7 +58,7 @@ public final class StatsImage {
 		Thread thread = new Thread(() -> {
 			Outcome outcome = deliver(mc, image);
 			mc.execute(() -> done.accept(outcome));
-		}, "광질 측정 복사");
+		}, "픽트래커 복사");
 		thread.setDaemon(true);
 		thread.start();
 	}

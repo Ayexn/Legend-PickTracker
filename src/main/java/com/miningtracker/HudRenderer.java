@@ -438,7 +438,7 @@ public final class HudRenderer {
 
 	private static int headerWidth(Font font) {
 		int pill = Math.max(font.width("측정 중"), font.width("쉬는 중")) + 15;
-		return 19 + font.width("광질 측정") + 10 + pill + 7;
+		return 19 + font.width("픽트래커") + 10 + pill + 7;
 	}
 
 	private static int heroLabelX(Font font, Panel p) {
@@ -454,7 +454,7 @@ public final class HudRenderer {
 		t.panel(g, 0, 0, w, h, false);
 		Theme.stripe(g, 0, 5, h - 10, t.status(p.resting));
 		icon(g, headerIcon(), 8, 5);
-		t.text(g, font, "광질 측정", 19, 5, t.sub);
+		t.text(g, font, "픽트래커", 19, 5, t.sub);
 		t.pill(g, font, p.resting ? "쉬는 중" : "측정 중", w - 7, 5, t.status(p.resting));
 	}
 

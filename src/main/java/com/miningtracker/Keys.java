@@ -5,7 +5,7 @@ import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.KeyMapping;
 import org.lwjgl.glfw.GLFW;
 
-/** Key bindings. They show up under "광질 측정" in 설정 → 조작 → 키 설정 and can be changed there. */
+/** Key bindings. They show up under "픽트래커" in 설정 → 조작 → 키 설정 and can be changed there. */
 public final class Keys {
 	private static final String CATEGORY = "key.categories.mining-tracker";
 

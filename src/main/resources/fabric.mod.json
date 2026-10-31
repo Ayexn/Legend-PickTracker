@@ -2,8 +2,11 @@
 	"schemaVersion": 1,
 	"id": "mining-tracker",
 	"version": "${version}",
-	"name": "광질 측정 (Mining Tracker)",
-	"description": "캔 블록과 먹은 광물을 세서 화면에 보여주고, 끝난 광질은 날짜별 통계로 남겨 주는 클라이언트 모드. 야생에서 곡괭이로 광질을 시작하면 자동으로 기록하고, 한동안 안 캐면 기록을 끝내요.",
+	"name": "픽트래커 (PickTracker)",
+	"description": "띵타이쿤 광질용 클라이언트 모드. 캔 블록과 먹은 광물(아이템 저장소 알림 · 인벤토리)을 세서 화면에 보여주고, 끝난 광질은 날짜별 통계로 남겨요. 야생 채널에서 곡괭이로 캐면 자동으로 기록하고, 한동안 안 캐면 끝내요. 서버로는 아무것도 보내지 않아요.",
+	"authors": [
+		"한서"
+	],
 	"icon": "assets/mining-tracker/icon.png",
 	"environment": "client",
 	"entrypoints": {

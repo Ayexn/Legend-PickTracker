@@ -36,7 +36,7 @@ public final class EditHudScreen extends Screen {
 	private double offsetY;
 
 	public EditHudScreen(Screen parent) {
-		super(Component.literal("광질 측정 HUD 편집"));
+		super(Component.literal("픽트래커 HUD 편집"));
 		this.parent = parent;
 	}
 

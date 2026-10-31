@@ -64,7 +64,7 @@ public final class SettingsScreen extends PanelScreen {
 	private int panelWidth = MIN_WIDTH;
 
 	public SettingsScreen(Screen parent) {
-		super(Component.literal("광질 측정 설정"), parent);
+		super(Component.literal("픽트래커 설정"), parent);
 
 		List<Setting> record = new ArrayList<>();
 		record.add(new Setting("기록 방식", Kind.CHOICES, new String[]{"자동", "수동"},
@@ -139,7 +139,7 @@ public final class SettingsScreen extends PanelScreen {
 	@Override
 	protected void init() {
 		int w = MIN_WIDTH;
-		w = Math.max(w, 19 + this.font.width("광질 측정 설정") + 16 + stateWidth() + 8);
+		w = Math.max(w, 19 + this.font.width("픽트래커 설정") + 16 + stateWidth() + 8);
 		for (Section section : sections) {
 			for (Setting s : section.settings()) {
 				w = Math.max(w, 11 + this.font.width(s.label) + 12 + controlWidth(s) + 11);
@@ -183,7 +183,7 @@ public final class SettingsScreen extends PanelScreen {
 	@Override
 	protected void drawPanel(GuiGraphics g, Theme t, int w, int h) {
 		HudRenderer.icon(g, HudRenderer.headerIcon(), 8, 6);
-		t.text(g, this.font, "광질 측정 설정", 19, 6, t.text);
+		t.text(g, this.font, "픽트래커 설정", 19, 6, t.text);
 		drawState(g, t, w - 8);
 
 		int y = 20;

@@ -1,5 +1,5 @@
 {
-	"key.categories.mining-tracker": "Mining Tracker",
+	"key.categories.mining-tracker": "PickTracker",
 	"key.mining-tracker.toggle": "Show/hide tally board",
 	"key.mining-tracker.pause": "Start/stop recording",
 	"key.mining-tracker.reset": "Reset counts (press twice)",

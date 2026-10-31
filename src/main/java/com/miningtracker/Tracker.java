@@ -452,7 +452,7 @@ public final class Tracker {
 		if (recording) {
 			if (cfg.autoMode && tick - lastMineTick > cfg.endAfterSeconds * 20L) {
 				stopRecording(mc, true);
-				notify(mc, "광질 측정: " + formatSeconds(cfg.endAfterSeconds) + " 동안 안 캐서 기록을 끝냈어요");
+				notify(mc, "픽트래커: " + formatSeconds(cfg.endAfterSeconds) + " 동안 안 캐서 기록을 끝냈어요");
 			} else if (mc.level != null && !mc.isPaused()
 					&& (!cfg.autoMode || tick - lastMineTick <= ACTIVE_GRACE_TICKS)) {
 				activeTicks++;
@@ -532,28 +532,28 @@ public final class Tracker {
 			ModConfig cfg = ModConfig.get();
 			cfg.hudVisible = !cfg.hudVisible;
 			ModConfig.save();
-			notify(mc, cfg.hudVisible ? "광질 측정: 집계판을 켰어요" : "광질 측정: 집계판을 숨겼어요");
+			notify(mc, cfg.hudVisible ? "픽트래커: 집계판을 켰어요" : "픽트래커: 집계판을 숨겼어요");
 		}
 		while (Keys.pause.consumeClick()) {
 			if (recording) {
 				stopRecording(mc, true);
-				notify(mc, "광질 측정: 기록을 끝냈어요");
+				notify(mc, "픽트래커: 기록을 끝냈어요");
 			} else {
 				startRecording(true);
 				ModConfig cfg = ModConfig.get();
 				notify(mc, cfg.autoMode
-						? "광질 측정: 기록을 시작했어요 (" + formatSeconds(cfg.endAfterSeconds) + " 동안 안 캐면 끝나요)"
-						: "광질 측정: 기록을 시작했어요 (F7을 다시 누르면 끝나요)");
+						? "픽트래커: 기록을 시작했어요 (" + formatSeconds(cfg.endAfterSeconds) + " 동안 안 캐면 끝나요)"
+						: "픽트래커: 기록을 시작했어요 (F7을 다시 누르면 끝나요)");
 			}
 		}
 		while (Keys.reset.consumeClick()) {
 			if (tick - resetArmedAt <= RESET_CONFIRM_TICKS) {
 				clearTallies();
 				resetArmedAt = Long.MIN_VALUE / 2;
-				notify(mc, "광질 측정: 집계판을 초기화했어요 (지금까지 캔 건 광질 통계에 남아요)");
+				notify(mc, "픽트래커: 집계판을 초기화했어요 (지금까지 캔 건 광질 통계에 남아요)");
 			} else {
 				resetArmedAt = tick;
-				notify(mc, "광질 측정: 3초 안에 한 번 더 누르면 집계판을 초기화해요");
+				notify(mc, "픽트래커: 3초 안에 한 번 더 누르면 집계판을 초기화해요");
 			}
 		}
 		while (Keys.edit.consumeClick()) {
@@ -1041,7 +1041,7 @@ public final class Tracker {
 		if (player == null || isEmpty()) {
 			return;
 		}
-		player.displayClientMessage(Component.literal("[광질 측정] ").withStyle(ChatFormatting.AQUA)
+		player.displayClientMessage(Component.literal("[픽트래커] ").withStyle(ChatFormatting.AQUA)
 				.append(Component.literal("광질 기록 끝 · " + HudRenderer.formatTime(activeTicks)).withStyle(ChatFormatting.WHITE)), false);
 
 		List<BlockTally> bl = sortedBlocks();
