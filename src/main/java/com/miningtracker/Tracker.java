@@ -566,6 +566,12 @@ public final class Tracker {
 				mc.setScreen(new StatsScreen(null));
 			}
 		}
+		while (Keys.blocks != null && Keys.blocks.consumeClick()) {
+			ModConfig cfg = ModConfig.get();
+			cfg.mineralBlocks = !cfg.mineralBlocks;
+			ModConfig.save();
+			notify(mc, cfg.mineralBlocks ? "픽트래커: 먹은 광물을 블록으로 보여줘요 (9개 = 블록 1개)" : "픽트래커: 먹은 광물을 개수로 보여줘요");
+		}
 	}
 
 	// ------------------------------------------------------------------ blocks

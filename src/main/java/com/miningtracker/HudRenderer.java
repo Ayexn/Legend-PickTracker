@@ -11,8 +11,10 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Draws the tally board (집계판) in the chosen layout and the pickup toasts (획득 알림), in the chosen theme.
@@ -50,6 +52,54 @@ public final class HudRenderer {
 
 	/** One line of the board: icon, name and a count. {@code dots}: "외 N종" (no icon). */
 	record Row(ItemStack icon, String name, long count, boolean dim, boolean dots) {
+	}
+
+	/** A mineral shown as blocks (먹은 광물을 블록으로): the block's icon and name, whole blocks and what is left. */
+	record AsBlocks(ItemStack icon, String name, long blocks, long left) {
+	}
+
+	/** Minerals that nine of make a block, by the game's own recipes. */
+	private static Map<net.minecraft.world.item.Item, net.minecraft.world.item.Item> nine;
+
+	private static Map<net.minecraft.world.item.Item, net.minecraft.world.item.Item> nine() {
+		if (nine == null) {
+			Map<net.minecraft.world.item.Item, net.minecraft.world.item.Item> map = new HashMap<>();
+			map.put(Items.REDSTONE, Items.REDSTONE_BLOCK);
+			map.put(Items.RAW_IRON, Items.RAW_IRON_BLOCK);
+			map.put(Items.RAW_COPPER, Items.RAW_COPPER_BLOCK);
+			map.put(Items.RAW_GOLD, Items.RAW_GOLD_BLOCK);
+			map.put(Items.LAPIS_LAZULI, Items.LAPIS_BLOCK);
+			map.put(Items.COAL, Items.COAL_BLOCK);
+			map.put(Items.DIAMOND, Items.DIAMOND_BLOCK);
+			map.put(Items.EMERALD, Items.EMERALD_BLOCK);
+			map.put(Items.IRON_INGOT, Items.IRON_BLOCK);
+			map.put(Items.GOLD_INGOT, Items.GOLD_BLOCK);
+			map.put(Items.COPPER_INGOT, Items.COPPER_BLOCK);
+			nine = map;
+		}
+		return nine;
+	}
+
+	/** The row as blocks, or null when it is not a plain mineral nine of which make a block (server items stay as they are). */
+	static AsBlocks asBlocks(Row r) {
+		if (r.dim() || r.dots() || r.icon() == null || r.icon().isEmpty() || History.Look.of(r.icon()) != null) {
+			return null;
+		}
+		net.minecraft.world.item.Item block = nine().get(r.icon().getItem());
+		if (block == null) {
+			return null;
+		}
+		ItemStack icon = new ItemStack(block);
+		return new AsBlocks(icon, icon.getHoverName().getString(), r.count() / 9, r.count() % 9);
+	}
+
+	/** Width of a row's count: "1,191", or as blocks "132 +3". */
+	private static int countWidth(Font font, Row r, boolean blocks) {
+		AsBlocks b = blocks ? asBlocks(r) : null;
+		if (b == null) {
+			return font.width(fmt(r.count()));
+		}
+		return font.width(fmt(b.blocks())) + (b.left() > 0 ? font.width(" +" + b.left()) : 0);
 	}
 
 	static final class Panel {
@@ -232,8 +282,9 @@ public final class HudRenderer {
 		int countW = Math.max(font.width("개수"), font.width("획득"));
 		for (List<Row> lines : List.of(blockLines, itemLines)) {
 			for (Row r : lines) {
-				nameW = Math.max(nameW, Math.min(NAME_MAX, font.width(r.name())));
-				countW = Math.max(countW, font.width(fmt(r.count())));
+				AsBlocks b = lines == itemLines && cfg.mineralBlocks ? asBlocks(r) : null;
+				nameW = Math.max(nameW, Math.min(NAME_MAX, font.width(b != null ? b.name() : r.name())));
+				countW = Math.max(countW, lines == itemLines ? countWidth(font, r, cfg.mineralBlocks) : font.width(fmt(r.count())));
 			}
 		}
 		String blocks = fmt(p.totalBlocks);
@@ -244,7 +295,7 @@ public final class HudRenderer {
 		int right = w - 9;
 
 		float[] rect = begin(g, cfg.panelX, cfg.panelY, cfg.panelScale, w, h);
-		board(g, font, p, t, w, h);
+		board(g, font, p, t, w, h, cfg.mineralBlocks);
 		hero(g, font, p, t, w, "캔 블록", blocks, t.text, "먹은 광물", minerals, t.text);
 		int y = 50;
 		t.text(g, font, "캔 블록", 8, y, t.sub);
@@ -275,7 +326,7 @@ public final class HudRenderer {
 		}
 		long top = topCount(itemLines);
 		for (Row r : itemLines) {
-			mineralRow(g, font, t, r, top, w, right, right - countW - 8 - 20, y);
+			mineralRow(g, font, t, r, top, w, right, right - countW - 8 - 20, y, cfg.mineralBlocks);
 			y += ROW;
 		}
 		g.pose().popPose();
@@ -290,8 +341,9 @@ public final class HudRenderer {
 		int countW = 0;
 		int nameW = font.width("아직 먹은 광물이 없어요");
 		for (Row r : lines) {
-			countW = Math.max(countW, font.width(fmt(r.count())));
-			nameW = Math.max(nameW, Math.min(NAME_MAX, font.width(r.name())));
+			AsBlocks b = cfg.mineralBlocks ? asBlocks(r) : null;
+			countW = Math.max(countW, countWidth(font, r, cfg.mineralBlocks));
+			nameW = Math.max(nameW, Math.min(NAME_MAX, font.width(b != null ? b.name() : r.name())));
 		}
 		int w = Math.max(MIN_WIDTH, Math.max(20 + nameW + 8 + countW + 9,
 				Math.max(headerWidth(font), heroWidth(font, p, "캔 블록", blocks, "먹은 광물", minerals))));
@@ -299,7 +351,7 @@ public final class HudRenderer {
 		int countR = w - 9;
 
 		float[] rect = begin(g, cfg.panelX, cfg.panelY, cfg.panelScale, w, h);
-		board(g, font, p, t, w, h);
+		board(g, font, p, t, w, h, cfg.mineralBlocks);
 		hero(g, font, p, t, w, "캔 블록", blocks, t.text, "먹은 광물", minerals, t.text);
 		int y = SLIM_TOP;
 		if (lines.isEmpty()) {
@@ -307,7 +359,7 @@ public final class HudRenderer {
 		}
 		long top = topCount(lines);
 		for (Row r : lines) {
-			mineralRow(g, font, t, r, top, w, countR, countR - countW - 8 - 20, y);
+			mineralRow(g, font, t, r, top, w, countR, countR - countW - 8 - 20, y, cfg.mineralBlocks);
 			y += ROW;
 		}
 		g.pose().popPose();
@@ -325,7 +377,7 @@ public final class HudRenderer {
 		int h = SLOTS_TOP + rows * (SLOT + SLOT_GAP) - SLOT_GAP + 8;
 
 		float[] rect = begin(g, cfg.panelX, cfg.panelY, cfg.panelScale, w, h);
-		board(g, font, p, t, w, h);
+		board(g, font, p, t, w, h, cfg.mineralBlocks);
 		hero(g, font, p, t, w, "캔 블록", blocks, t.text, "먹은 광물", minerals, t.text);
 		if (slots.isEmpty()) {
 			t.text(g, font, "아직 먹은 광물이 없어요", 8, SLOTS_TOP + 6, t.dim);
@@ -335,6 +387,7 @@ public final class HudRenderer {
 		PoseStack pose = g.pose();
 		for (int i = 0; i < slots.size(); i++) {
 			Row r = slots.get(i);
+			AsBlocks b = cfg.mineralBlocks ? asBlocks(r) : null;
 			int sx = x0 + (i % perRow) * (SLOT + SLOT_GAP);
 			int sy = SLOTS_TOP + (i / perRow) * (SLOT + SLOT_GAP);
 			int tint = r.dim() || r.dots() ? Palette.OTHER : Palette.of(r.icon());
@@ -343,13 +396,17 @@ public final class HudRenderer {
 			if (r.dots()) {
 				dots(g, t, sx + 6, sy + 8);
 			} else if (!r.icon().isEmpty()) {
-				g.renderItem(r.icon(), sx + 2, sy + 1);
+				g.renderItem(b != null ? b.icon() : r.icon(), sx + 2, sy + 1);
 			}
 			// above the item, like the game's own stack counts
 			pose.pushPose();
 			pose.translate(0, 0, 200);
-			String count = slotCount(r.count());
+			String count = slotCount(b != null ? b.blocks() : r.count());
 			g.drawString(font, count, sx + SLOT - 1 - font.width(count), sy + SLOT - 9, r.dim() ? 0xFFAAAAAA : 0xFFFFFFFF, true);
+			if (b != null && b.left() > 0) {
+				// what is left over, small in the top left corner
+				g.drawString(font, "+" + b.left(), sx + 1, sy + 1, 0xFFBFC6CF, true);
+			}
 			pose.popPose();
 		}
 		pose.popPose();
@@ -358,19 +415,19 @@ public final class HudRenderer {
 
 	/** 한 줄: everything on one line, centred at the top of the screen by default. */
 	static float[] drawBar(GuiGraphics g, Font font, Panel p, ModConfig cfg, Theme t) {
-		int w = bar(null, font, p, t);
+		int w = bar(null, font, p, t, cfg.mineralBlocks);
 		float scale = cfg.barScale;
 		float center = cfg.barCenterX < 0 ? g.guiWidth() / 2f : cfg.barCenterX;
 		float[] rect = begin(g, center - w * scale / 2f, cfg.barY, scale, w, BAR_HEIGHT);
 		t.panel(g, 0, 0, w, BAR_HEIGHT, false);
 		Theme.stripe(g, 0, 3, BAR_HEIGHT - 6, t.status(p.resting));
-		bar(g, font, p, t);
+		bar(g, font, p, t, cfg.mineralBlocks);
 		g.pose().popPose();
 		return rect;
 	}
 
 	/** Lays out the one-line board and draws it when {@code g} is not null. Returns its width. */
-	private static int bar(GuiGraphics g, Font font, Panel p, Theme t) {
+	private static int bar(GuiGraphics g, Font font, Panel p, Theme t, boolean asBlocks) {
 		int x = 7;
 		if (g != null) {
 			icon(g, headerIcon(), x, 3);
@@ -389,11 +446,16 @@ public final class HudRenderer {
 		int shown = Math.min(p.minerals.size(), BAR_MAX_ITEMS);
 		for (int i = 0; i < shown; i++) {
 			Row r = p.minerals.get(i);
+			AsBlocks b = asBlocks ? asBlocks(r) : null;
 			if (g != null) {
-				icon(g, r.icon(), x, 3);
+				icon(g, b != null ? b.icon() : r.icon(), x, 3);
 			}
 			x += 10;
-			x = barText(g, font, t, fmt(r.count()), x, t.text) + 6;
+			x = barText(g, font, t, fmt(b != null ? b.blocks() : r.count()), x, t.text);
+			if (b != null && b.left() > 0) {
+				x = barText(g, font, t, "+" + b.left(), x + 2, t.dim);
+			}
+			x += 6;
 		}
 		if (p.minerals.size() > shown) {
 			x = barText(g, font, t, "+" + (p.minerals.size() - shown) + "종", x, t.dim) + 6;
@@ -438,7 +500,7 @@ public final class HudRenderer {
 
 	private static int headerWidth(Font font) {
 		int pill = Math.max(font.width("측정 중"), font.width("쉬는 중")) + 15;
-		return 19 + font.width("픽트래커") + 10 + pill + 7;
+		return 19 + font.width("픽트래커") + 4 + font.width("· 블록으로") + 10 + pill + 7;
 	}
 
 	private static int heroLabelX(Font font, Panel p) {
@@ -449,12 +511,15 @@ public final class HudRenderer {
 		return heroLabelX(font, p) + Math.max(font.width(l1), font.width(l2)) + 8 + Math.max(font.width(v1), font.width(v2)) + 8;
 	}
 
-	/** The card, the status stripe on the left, and the header line. */
-	private static void board(GuiGraphics g, Font font, Panel p, Theme t, int w, int h) {
+	/** The card, the status stripe on the left, and the header line ("· 블록으로" while minerals show as blocks). */
+	private static void board(GuiGraphics g, Font font, Panel p, Theme t, int w, int h, boolean asBlocks) {
 		t.panel(g, 0, 0, w, h, false);
 		Theme.stripe(g, 0, 5, h - 10, t.status(p.resting));
 		icon(g, headerIcon(), 8, 5);
 		t.text(g, font, "픽트래커", 19, 5, t.sub);
+		if (asBlocks) {
+			t.text(g, font, "· 블록으로", 19 + font.width("픽트래커") + 4, 5, t.accent);
+		}
 		t.pill(g, font, p.resting ? "쉬는 중" : "측정 중", w - 7, 5, t.status(p.resting));
 	}
 
@@ -470,8 +535,12 @@ public final class HudRenderer {
 		g.fill(8, 45, w - 8, 46, t.sep);
 	}
 
-	/** A mineral line: a bar in the mineral's colour behind it, icon, name and count. */
-	private static void mineralRow(GuiGraphics g, Font font, Theme t, Row r, long top, int w, int countR, int nameMax, int y) {
+	/**
+	 * A mineral line: a bar in the mineral's colour behind it, icon, name and count. {@code asBlocks}: a mineral nine of
+	 * which make a block shows the block, whole blocks and (dim) what is left; the bar stays as long as the minerals.
+	 */
+	private static void mineralRow(GuiGraphics g, Font font, Theme t, Row r, long top, int w, int countR, int nameMax, int y,
+			boolean asBlocks) {
 		if (!r.dim() && !r.dots() && top > 0) {
 			int color = Palette.of(r.icon());
 			int x0 = 5;
@@ -479,14 +548,25 @@ public final class HudRenderer {
 			Theme.rrect(g, x0, y - 3, fill - x0, 13, Theme.withAlpha(color, t.barAlpha), 1);
 			g.fill(x0, y - 2, x0 + 1, y + 9, color);
 		}
+		AsBlocks b = asBlocks ? asBlocks(r) : null;
 		if (r.dots()) {
 			dots(g, t, 10, y + 5);
 		} else {
-			icon(g, r.icon(), 9, y);
+			icon(g, b != null ? b.icon() : r.icon(), 9, y);
 		}
 		int color = r.dim() ? t.dim : t.text;
-		t.text(g, font, ellipsize(font, r.name(), nameMax), 20, y, color);
-		t.textRight(g, font, fmt(r.count()), countR, y, color);
+		t.text(g, font, ellipsize(font, b != null ? b.name() : r.name(), nameMax), 20, y, color);
+		if (b == null) {
+			t.textRight(g, font, fmt(r.count()), countR, y, color);
+			return;
+		}
+		int right = countR;
+		if (b.left() > 0) {
+			String left = " +" + b.left();
+			t.textRight(g, font, left, right, y, t.dim);
+			right -= font.width(left);
+		}
+		t.textRight(g, font, fmt(b.blocks()), right, y, color);
 	}
 
 	private static long topCount(List<Row> rows) {

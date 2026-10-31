@@ -54,6 +54,17 @@ public final class Commands {
 							ModConfig.save();
 							return reply(c.getSource(), "획득 알림을 껐어요.");
 						})))
+				.then(literal("블록")
+						.then(literal("켜기").executes(c -> {
+							ModConfig.get().mineralBlocks = true;
+							ModConfig.save();
+							return reply(c.getSource(), "먹은 광물을 블록으로 보여줘요 (9개 = 블록 1개, 남는 건 +N). 끄기: /광질 블록 끄기");
+						}))
+						.then(literal("끄기").executes(c -> {
+							ModConfig.get().mineralBlocks = false;
+							ModConfig.save();
+							return reply(c.getSource(), "먹은 광물을 개수로 보여줘요.");
+						})))
 				.then(literal("편집").executes(c -> {
 					Tracker.INSTANCE.requestEditor();
 					return 1;
@@ -165,6 +176,7 @@ public final class Commands {
 				" /광질 초기화 — 집계판 숫자 초기화 (F8 두 번)",
 				" /광질 숨기기, /광질 보이기 — 집계판 숨기기/보이기 (F6)",
 				" /광질 알림 켜기, /광질 알림 끄기 — 획득 알림",
+				" /광질 블록 켜기, /광질 블록 끄기 — 먹은 광물을 블록으로 보기 (B)",
 				" /광질 편집 — 위치·크기 바꾸기",
 				" /광질 진단 — 숫자가 이상할 때 확인용"
 		};

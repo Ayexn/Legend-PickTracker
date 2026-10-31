@@ -4,5 +4,6 @@
 	"key.mining-tracker.pause": "기록 시작/끝내기",
 	"key.mining-tracker.reset": "집계판 초기화 (두 번 누르기)",
 	"key.mining-tracker.edit": "설정 열기",
-	"key.mining-tracker.stats": "광질 통계 열기"
+	"key.mining-tracker.stats": "광질 통계 열기",
+	"key.mining-tracker.blocks": "먹은 광물 블록으로 보기"
 }

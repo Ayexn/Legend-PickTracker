@@ -4,5 +4,6 @@
 	"key.mining-tracker.pause": "Start/stop recording",
 	"key.mining-tracker.reset": "Reset counts (press twice)",
 	"key.mining-tracker.edit": "Open settings",
-	"key.mining-tracker.stats": "Open statistics"
+	"key.mining-tracker.stats": "Open statistics",
+	"key.mining-tracker.blocks": "Show minerals as blocks"
 }

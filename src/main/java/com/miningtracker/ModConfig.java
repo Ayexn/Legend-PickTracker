@@ -62,6 +62,8 @@ public final class ModConfig {
 	/** 테마: mint (민트), blue (파랑), purple (보라), orange (주황), white (흰색), clear (투명). */
 	public String theme = Theme.MINT.id;
 	public boolean hudVisible = true;
+	/** 먹은 광물을 블록으로: minerals nine of which make a block shown as blocks and what is left (B 키). */
+	public boolean mineralBlocks = false;
 	public boolean toastsEnabled = true;
 	public boolean toastOthers = false;
 	public float panelX = DEFAULT_PANEL_X;

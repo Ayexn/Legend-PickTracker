@@ -29,6 +29,8 @@ public final class SettingsScreen extends PanelScreen {
 	private static final String RESTART = "새 광질을 0부터 셀지, 전 기록에 이어서 셀지";
 	private static final String SUMMARY = "광질이 끝나면 이번 기록을 채팅에 남겨요 (나만 보여요)";
 	private static final String THEME = "집계판, 획득 알림, 설정창 색이 같이 바뀌어요";
+	private static final String COUNT = "먹은 광물을 개수로 보여줘요";
+	private static final String BLOCKS = "9개를 블록 1개로 바꿔 보여줘요 (B 키로도 바꿔요)";
 	private static final String STATS = "지난 광질 기록을 날짜별로 봐요 (F10)";
 	private static final String SAVED_HINT = "바꾸면 바로 저장돼요";
 
@@ -106,6 +108,11 @@ public final class SettingsScreen extends PanelScreen {
 				i -> ModConfig.get().layout = layouts[i].id,
 				() -> ModConfig.get().hudLayout().description,
 				() -> true));
+		screen.add(new Setting("먹은 광물", Kind.CHOICES, new String[]{"개수", "블록으로"},
+				() -> ModConfig.get().mineralBlocks ? 1 : 0,
+				i -> ModConfig.get().mineralBlocks = i == 1,
+				() -> ModConfig.get().mineralBlocks ? BLOCKS : COUNT,
+				() -> true));
 		String[] themeLabels = new String[Theme.ALL.size()];
 		for (int i = 0; i < themeLabels.length; i++) {
 			themeLabels[i] = Theme.ALL.get(i).name;
@@ -122,7 +129,7 @@ public final class SettingsScreen extends PanelScreen {
 				() -> true));
 		sections.add(new Section("화면", screen));
 
-		allDescriptions.addAll(List.of(MODE_AUTO, MODE_MANUAL, END_AUTO, END_MANUAL, RESTART, SUMMARY, THEME, STATS));
+		allDescriptions.addAll(List.of(MODE_AUTO, MODE_MANUAL, END_AUTO, END_MANUAL, RESTART, SUMMARY, THEME, STATS, COUNT, BLOCKS));
 	}
 
 	private static int indexOf(int[] values, int value) {
