@@ -119,6 +119,8 @@ public final class StatsScreen extends PanelScreen {
 	private YearMonth month;
 	/** The day being shown, or null for all the days of the tab. */
 	private LocalDate day;
+	/** A recording picked in 이날 광질: 광물별 shows only its minerals. Null for the whole day. */
+	private History.Session session;
 	private long undoArmedAt;
 	private long clearArmedAt;
 	/** A line for the bottom left after a button did something, shown for a while. */
@@ -400,7 +402,34 @@ public final class StatsScreen extends PanelScreen {
 		tab = index;
 		month = null;
 		day = index == TODAY ? LocalDate.now() : null;
+		session = null;
 		picking = false;
+	}
+
+	/** Opens a day (null: back to the days of the tab), with no recording picked. */
+	private void open(LocalDate date) {
+		day = date;
+		session = null;
+	}
+
+	/** The recording picked in 이날 광질, when it is one of {@code d}'s (it may have been taken back since). */
+	private History.Session picked(History.Day d) {
+		if (session == null || d == null) {
+			return null;
+		}
+		for (History.Session s : d.sessions) {
+			if (s == session) {
+				return s;
+			}
+		}
+		return null;
+	}
+
+	/** A recording's minerals, most first. */
+	private static List<History.Item> sorted(History.Session s) {
+		List<History.Item> list = new ArrayList<>(s.items);
+		list.sort((a, b) -> Long.compare(b.count, a.count));
+		return list;
 	}
 
 	/** After the title: ◀ the day ▶. */
@@ -423,7 +452,7 @@ public final class StatsScreen extends PanelScreen {
 	private void step(int days) {
 		LocalDate next = day.plusDays(days);
 		LocalDate today = LocalDate.now();
-		day = next.isAfter(today) ? today : next;
+		open(next.isAfter(today) ? today : next);
 	}
 
 	/** The days of the tab (or the month): totals, a bar for each day, minerals by kind. */
@@ -437,7 +466,7 @@ public final class StatsScreen extends PanelScreen {
 			return;
 		}
 		drawChart(g, t, w, top, total);
-		drawKinds(g, t, w, top + CHART_H + GAP, bottom, total.items, total.other, total.minerals);
+		drawKinds(g, t, w, top + CHART_H + GAP, bottom, total.items, total.other, total.minerals, null);
 	}
 
 	/** One day: totals, minerals by kind and each recording. */
@@ -464,8 +493,14 @@ public final class StatsScreen extends PanelScreen {
 		}
 		drawCards(g, t, w, d.seconds, d.blocks, d.minerals, d.sessions.size());
 		int top = TOP + CARD_H + GAP;
+		// as tall as the whole day's table, so 이날 광질 stays put when a recording is picked
 		int kindsBottom = top + kindsHeight(rows(d.items).lines(d.other));
-		drawKinds(g, t, w, top, kindsBottom, d.items, d.other, d.minerals);
+		History.Session s = picked(d);
+		if (s == null) {
+			drawKinds(g, t, w, top, kindsBottom, d.items, d.other, d.minerals, null);
+		} else {
+			drawKinds(g, t, w, top, kindsBottom, sorted(s), s.other, s.minerals(), s);
+		}
 		drawSessions(g, t, d, w, kindsBottom + GAP, bottom);
 	}
 
@@ -547,7 +582,7 @@ public final class StatsScreen extends PanelScreen {
 				}
 				long v = byDay.getOrDefault(d, 0L);
 				String tip = d.getMonthValue() + "월 " + dom + "일 (" + weekday(d) + ") · " + HudRenderer.fmt(v) + "개";
-				bars.add(new Bar(label, v, d.equals(today), tip, d.isAfter(today) ? null : () -> day = d));
+				bars.add(new Bar(label, v, d.equals(today), tip, d.isAfter(today) ? null : () -> open(d)));
 			}
 		}
 
@@ -625,21 +660,32 @@ public final class StatsScreen extends PanelScreen {
 
 	/**
 	 * Minerals by kind, each on a bar as long as its count: the count and its share of all minerals. Only the chosen
-	 * ones (고르기), the rest added up in one 그 외 line.
+	 * ones (고르기), the rest added up in one 그 외 line. {@code session}: these are one recording's (a tag says which).
 	 */
 	private void drawKinds(GuiGraphics g, Theme t, int w, int top, int bottom, List<History.Item> items, long other,
-			long minerals) {
+			long minerals, History.Session session) {
 		int x0 = X0;
 		int right = w - 8;
 		Theme.rrect(g, x0, top, right - x0, bottom - top, t.card, 1);
 		int colShare = right - 7;
 		int colCount = colShare - 52;
 		t.text(g, this.font, "광물별", x0 + 6, top + 5, t.sub);
+		int hx = x0 + 6 + this.font.width("광물별") + 6;
+		if (session != null) {
+			String which = clock(session.start) + " 광질";
+			int tw = this.font.width(which) + 12;
+			Theme.rrect(g, hx, top + 2, tw, SEG_H, Theme.withAlpha(t.accent, 56), 1);
+			t.text(g, this.font, which, hx + 6, top + 5, t.accent);
+			hx += tw + 4;
+		}
 		if (!forImage) {
-			chip(g, t, x0 + 6 + this.font.width("광물별") + 6, top + 2, "고르기", false, () -> {
+			chip(g, t, hx, top + 2, "고르기", false, () -> {
 				picking = true;
 				pickScroll = 0;
 			});
+			if (session != null) {
+				chip(g, t, hx + this.font.width("고르기") + 12 + 4, top + 2, "하루 전체", false, () -> this.session = null);
+			}
 		}
 		t.textRight(g, this.font, "개수", colCount, top + 5, t.dim);
 		t.textRight(g, this.font, "비율", colShare, top + 5, t.dim);
@@ -794,12 +840,20 @@ public final class StatsScreen extends PanelScreen {
 		hits.add(new Hit(x, y, x + bw, y + SEG_H, action));
 	}
 
-	/** Each recording of the day, in a box down to {@code bottom}. */
+	/**
+	 * Each recording of the day, in a box down to {@code bottom}. A line picks that recording: 광물별 shows only its
+	 * minerals; the picked line again (or 하루 전체) goes back to the whole day.
+	 */
 	private void drawSessions(GuiGraphics g, Theme t, History.Day d, int w, int top, int bottom) {
 		int x0 = X0;
 		int right = w - 8;
 		Theme.rrect(g, x0, top, right - x0, Math.max(sessionsHeight(d), bottom - top), t.card, 1);
 		t.text(g, this.font, "이날 광질", x0 + 6, top + 5, t.sub);
+		History.Session picked = picked(d);
+		if (!forImage) {
+			String hint = picked == null ? "누르면 그 광질의 광물별이 나와요" : "한 번 더 누르면 하루 전체로";
+			t.text(g, this.font, hint, x0 + 6 + this.font.width("이날 광질") + 6, top + 5, t.dim);
+		}
 		int start = x0 + 6;
 		int time = x0 + 56;
 		int minerals = right - 7;
@@ -814,11 +868,25 @@ public final class StatsScreen extends PanelScreen {
 		int from = Math.max(0, list.size() - MAX_SESSIONS);
 		for (int i = from; i < list.size(); i++) {
 			History.Session s = list.get(i);
-			LocalDateTime when = LocalDateTime.ofInstant(Instant.ofEpochMilli(s.start), ZoneId.systemDefault());
-			t.text(g, this.font, String.format(Locale.ROOT, "%02d:%02d", when.getHour(), when.getMinute()), start, y, t.text);
-			t.text(g, this.font, duration(s.seconds), time, y, t.sub);
-			t.textRight(g, this.font, HudRenderer.fmt(s.blocks), blocks, y, t.text);
-			t.textRight(g, this.font, HudRenderer.fmt(s.minerals()), minerals, y, t.text);
+			boolean on = s == picked;
+			int rx0 = x0 + 3;
+			int rx1 = right - 3;
+			int ry = y - 3;
+			boolean hover = !forImage && hovered(rx0, ry, rx1 - rx0, SESSION_ROW);
+			if (on) {
+				Theme.rrect(g, rx0, ry, rx1 - rx0, SESSION_ROW, Theme.withAlpha(t.accent, 48), 1);
+				g.fill(rx0, ry + 1, rx0 + 1, ry + SESSION_ROW - 1, t.accent);
+			} else if (hover) {
+				Theme.rrect(g, rx0, ry, rx1 - rx0, SESSION_ROW, Theme.withAlpha(t.text, 18), 1);
+			}
+			int main = on ? t.accent : t.text;
+			t.text(g, this.font, clock(s.start), start, y, main);
+			t.text(g, this.font, duration(s.seconds), time, y, on ? t.accent : t.sub);
+			t.textRight(g, this.font, HudRenderer.fmt(s.blocks), blocks, y, main);
+			t.textRight(g, this.font, HudRenderer.fmt(s.minerals()), minerals, y, main);
+			if (!forImage) {
+				hits.add(new Hit(rx0, ry, rx1, ry + SESSION_ROW, () -> session = on ? null : s));
+			}
 			y += SESSION_ROW;
 		}
 		if (from > 0) {
@@ -858,7 +926,7 @@ public final class StatsScreen extends PanelScreen {
 		int tx = 9;
 		if (day != null && tab != TODAY) {
 			int backW = buttonWidth("돌아가기");
-			button(g, t, 7, y + 1, backW, "돌아가기", false, () -> day = null);
+			button(g, t, 7, y + 1, backW, "돌아가기", false, () -> open(null));
 			tx = 7 + backW + 6;
 		}
 		String text;
@@ -912,6 +980,12 @@ public final class StatsScreen extends PanelScreen {
 	}
 
 	// ------------------------------------------------------------------ helpers
+
+	/** "13:05": when a recording started. */
+	private static String clock(long millis) {
+		LocalDateTime when = LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault());
+		return String.format(Locale.ROOT, "%02d:%02d", when.getHour(), when.getMinute());
+	}
 
 	/** "10/30 01:12 · 광물 241개". */
 	private static String describe(History.Session s) {
