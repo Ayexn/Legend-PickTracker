@@ -7,7 +7,9 @@ import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.network.chat.Component;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.literal;
 
@@ -74,7 +76,8 @@ public final class Commands {
 					return 1;
 				}))
 				.then(literal("진단").executes(c -> diagnose(c.getSource()))
-						.then(literal("최근").executes(c -> recent(c.getSource())))));
+						.then(literal("최근").executes(c -> recent(c.getSource())))
+						.then(literal("광물").executes(c -> minerals(c.getSource())))));
 	}
 
 	private static int start(FabricClientCommandSource source) {
@@ -125,11 +128,19 @@ public final class Commands {
 		lines.add(" 세는 방식: 저장소 알림" + (cfg.countInventory ? " + 인벤토리" : " (인벤토리는 설정에서 꺼짐)"));
 		lines.add(" 저장소 알림으로 센 획득: " + s.storageNotices + "번 (" + s.storageItems + "개)"
 				+ (s.storageFromScreen > 0 ? " · 그중 화면 글자로 읽은 것 " + s.storageFromScreen + "번" : "")
-				+ (s.storageRepeats > 0 ? " · 같은 알림이라 뺀 것 " + s.storageRepeats + "번" : "")
+				+ (s.storageRepeats > 0 ? " · 같은 알림이라 뺀 것 " + s.storageRepeats + "번 (" + s.storageRepeatItems + "개)" : "")
 				+ (s.storageNotRecording > 0 ? " · 기록 중이 아니거나 야생이 아니라 뺀 것 " + s.storageNotRecording + "번" : ""));
-		if (s.storageGapFilled > 0 || s.storageGap > 0 || s.storageUnknown > 0 || s.withdrawals > 0) {
+		if (s.storageGapFilled > 0 || s.storageGap > 0 || s.storageCapped > 0 || s.storageUnknown > 0 || s.withdrawals > 0) {
 			lines.add(" 놓친 알림으로 채운 것: " + s.storageGapFilled + "개 · 저장소가 더 늘었지만 안 센 것: " + s.storageGap
-					+ "개 · 이름을 몰라 종이로 센 것: " + s.storageUnknown + "번 · 인출: " + s.withdrawals + "번");
+					+ "개 · 알림보다 저장소가 덜 늘어서 뺀 것: " + s.storageCapped + "개 · 이름을 몰라 종이로 센 것: "
+					+ s.storageUnknown + "번 · 인출: " + s.withdrawals + "번");
+		}
+		if (!s.gapWhy.isEmpty()) {
+			List<String> why = new ArrayList<>();
+			for (Map.Entry<String, Long> e : s.gapWhy.entrySet()) {
+				why.add(e.getKey().replace("그 사이 ", "") + " " + e.getValue() + "개");
+			}
+			lines.add(" 안 센 이유: " + String.join(" · ", why));
 		}
 		InventoryWatch inv = tracker.inventoryWatch();
 		lines.add(" 인벤토리로 바로 들어온 걸로 센 획득: " + inv.counted + "번 (" + inv.countedItems + "개)"
@@ -138,9 +149,59 @@ public final class Commands {
 				+ (inv.withdrawnItems > 0 ? " · 인출한 것 " + inv.withdrawnItems + "개" : ""));
 		lines.add(" 주변 블록으로 센 블록(3x3 등): " + s.neighborBlocks + "개");
 		lines.add(" 서버가 되돌린 블록: " + s.restoredBlocks + "개 (그중 서버가 바로 다시 깨서 다시 센 것 " + s.rebrokenBlocks + "개)");
-		lines.add(" 무엇을 왜 세고 안 셌는지: /광질 진단 최근");
+		lines.add(" 광물별로 보기: /광질 진단 광물 · 무엇을 왜 세고 안 셌는지: /광질 진단 최근");
 		for (String line : lines) {
 			source.sendFeedback(Component.literal(line));
+		}
+		return 1;
+	}
+
+	/**
+	 * Each mineral this recording: what was counted and from where, and how much the storage went up meanwhile, to
+	 * hold against the storage.
+	 */
+	private static int minerals(FabricClientCommandSource source) {
+		Tracker tracker = Tracker.INSTANCE;
+		List<Tracker.ItemDiag> diags = tracker.itemDiags();
+		Map<String, Long> counted = new LinkedHashMap<>();
+		for (Tracker.ItemTally t : tracker.sortedItems()) {
+			if (!t.other) {
+				counted.merge(t.name, t.count, Long::sum);
+			}
+		}
+		source.sendFeedback(Component.literal("[픽트래커] 광물별 (이번 기록) · 센 것 = 알림 + 채움 + 인벤토리"));
+		if (diags.isEmpty() && counted.isEmpty()) {
+			source.sendFeedback(Component.literal(" 아직 없어요. 기록 중에 광물을 먹으면 여기 나와요."));
+			return 1;
+		}
+		for (Tracker.ItemDiag d : diags) {
+			long total = counted.getOrDefault(d.name, 0L);
+			StringBuilder line = new StringBuilder(" " + d.name + ": 센 것 " + HudRenderer.fmt(total) + "개 (알림 "
+					+ HudRenderer.fmt(d.fromNotices) + " · 채움 " + HudRenderer.fmt(d.filled) + " · 인벤토리 "
+					+ HudRenderer.fmt(d.fromInventory) + ")");
+			if (d.storageFrom >= 0) {
+				line.append(" · 저장소 ").append(HudRenderer.fmt(d.storageFrom)).append(" → ")
+						.append(HudRenderer.fmt(d.storageTo)).append(" (+").append(HudRenderer.fmt(d.storageTo - d.storageFrom))
+						.append(d.mixed ? ", 중간에 창·인출 등 있었음)" : ")");
+			}
+			source.sendFeedback(Component.literal(line.toString()));
+			List<String> more = new ArrayList<>();
+			if (d.capped > 0) {
+				more.add("저장소가 덜 늘어서 뺀 것 " + d.capped + "개");
+			}
+			if (d.unfilled > 0) {
+				more.add("저장소가 더 늘었지만 안 센 것 " + d.unfilled + "개");
+			}
+			if (d.repeats > 0) {
+				more.add("같은 알림 " + d.repeats + "번 (" + d.repeatItems + "개)");
+			}
+			if (!more.isEmpty()) {
+				source.sendFeedback(Component.literal("   └ " + String.join(" · ", more)));
+			}
+			counted.remove(d.name);
+		}
+		for (Map.Entry<String, Long> e : counted.entrySet()) {
+			source.sendFeedback(Component.literal(" " + e.getKey() + ": 센 것 " + HudRenderer.fmt(e.getValue()) + "개"));
 		}
 		return 1;
 	}
@@ -178,7 +239,8 @@ public final class Commands {
 				" /광질 알림 켜기, /광질 알림 끄기 — 획득 알림",
 				" /광질 블록 켜기, /광질 블록 끄기 — 먹은 광물을 블록으로 보기 (B)",
 				" /광질 편집 — 위치·크기 바꾸기",
-				" /광질 진단 — 숫자가 이상할 때 확인용"
+				" /광질 진단 — 숫자가 이상할 때 확인용",
+				" /광질 진단 광물 — 광물마다 센 것과 저장소가 늘어난 개수 비교"
 		};
 		for (String line : lines) {
 			source.sendFeedback(Component.literal(line));

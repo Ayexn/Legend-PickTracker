@@ -4,6 +4,7 @@ import com.miningtracker.mixin.BossHealthOverlayAccessor;
 import com.miningtracker.mixin.GuiAccessor;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
@@ -117,6 +118,42 @@ public final class Tracker {
 		public long storageGapFilled;
 		/** Notices read off the screen because the hook did not see them (counted ones). */
 		public long storageFromScreen;
+		/** Items the notices said but the storage's count did not go up by (only what it went up by counted). */
+		public long storageCapped;
+		/** Items in notices left out as the same notice again. */
+		public long storageRepeatItems;
+		/** {@link #storageGap} by why it was not filled in. */
+		public final Map<String, Long> gapWhy = new LinkedHashMap<>();
+	}
+
+	/** One mineral in /광질 진단 광물: where its count came from, and how much the storage went up meanwhile. */
+	public static final class ItemDiag {
+		public final String name;
+		/** Storage notices counted, and the items they said. */
+		public long notices;
+		public long noticeItems;
+		/** Counted from the notices (what the inventory had counted first is left out). */
+		public long fromNotices;
+		/** Filled in for missed notices. */
+		public long filled;
+		/** Counted from the inventory (it came in straight, no notice). */
+		public long fromInventory;
+		/** The notices said more than the storage went up by: left out. */
+		public long capped;
+		/** The same notice again: times and items. */
+		public long repeats;
+		public long repeatItems;
+		/** The storage went up more than counted, not filled in. */
+		public long unfilled;
+		/** The storage's count before the first counted notice and at the last one (-1: none yet). */
+		public long storageFrom = -1;
+		public long storageTo = -1;
+		/** Something in between (a screen, taking out, leaving 야생) makes the storage's rise not all picked up. */
+		public boolean mixed;
+
+		ItemDiag(String name) {
+			this.name = name;
+		}
 	}
 
 	private static final class PrimaryCheck {
@@ -199,7 +236,9 @@ public final class Tracker {
 		@Override
 		public void count(ItemStack proto, int amount) {
 			Tracker.this.count(proto, amount);
-			inventorySinceNotice.merge(proto.getHoverName().getString(), (long) amount, Long::sum);
+			String name = proto.getHoverName().getString();
+			inventorySinceNotice.merge(name, (long) amount, Long::sum);
+			itemDiag(name).fromInventory += amount;
 		}
 
 		@Override
@@ -215,14 +254,16 @@ public final class Tracker {
 	private final Map<String, Balance> storageBalances = new HashMap<>();
 	/** Counted from the inventory since the item's last storage notice (by name): part of a jump is that. */
 	private final Map<String, Long> inventorySinceNotice = new HashMap<>();
-	/** How far apart two notices of an item may be for a jump between them to be filled in. */
-	private static final int GAP_FILL_TICKS = 2400;
+	/** Each mineral's numbers for /광질 진단 광물 (this recording), in the order first seen. */
+	private final Map<String, ItemDiag> itemDiags = new LinkedHashMap<>();
 	/** When the running recording started, and the last time it was away (not 야생, between worlds). */
 	private long recordingSince = Long.MAX_VALUE;
 	private long lastAwayTick = Long.MIN_VALUE / 2;
-	/** The last time a screen was open (the storage, a chest, the chat), and the last "N개 인출". */
+	/** The last time a screen other than the chat was open (the storage, a chest), and the last "N개 인출". */
 	private long lastScreenTick = Long.MIN_VALUE / 2;
 	private long lastWithdrawTick = Long.MIN_VALUE / 2;
+	/** The last command the player sent to the server (one could put things into the storage). */
+	private long lastCommandTick = Long.MIN_VALUE / 2;
 	/** The last line the hook saw, and the last line read off the screen (the same one stays up ~3 s). */
 	private Component lastHooked;
 	private Component lastShown;
@@ -400,6 +441,10 @@ public final class Tracker {
 		stats.withdrawals = 0;
 		stats.storageGapFilled = 0;
 		stats.storageFromScreen = 0;
+		stats.storageCapped = 0;
+		stats.storageRepeatItems = 0;
+		stats.gapWhy.clear();
+		itemDiags.clear();
 		dirty = true;
 	}
 
@@ -481,7 +526,8 @@ public final class Tracker {
 			readChannel(mc);
 		}
 
-		if (mc.screen != null) {
+		if (mc.screen != null && !(mc.screen instanceof ChatScreen)) {
+			// the chat alone cannot put anything into the storage (a command sent from it is seen by itself)
 			lastScreenTick = tick;
 		}
 		if (recording && !countsHere(level)) {
@@ -835,33 +881,46 @@ public final class Tracker {
 		}
 	}
 
+	/**
+	 * A notice: counted as the storage says. While the item's last notice is near enough to trust (recording here the
+	 * whole time, no screen, command or taking out in between, however long ago), what the storage's count went up
+	 * by is what counts: more than the notice said is filled in (missed notices), less is all that counts (a notice
+	 * said more than came in, or two notices showed one count). Otherwise the notice counts as it is.
+	 */
 	private void onStored(StorageNotice.Stored s, String text, boolean fromScreen) {
 		String what = s.name() + " " + s.amount() + "개";
 		String read = fromScreen ? " · 화면 글자로 읽음" : "";
 		ClientLevel level = Minecraft.getInstance().level;
 		boolean counting = level != null && countsHere(level);
-		long gap = 0;
-		long gapFrom = 0;
-		String gapWhy = null;
+		long rise = Long.MIN_VALUE;
+		long from = 0;
+		String why = null;
 		long viaInventory = 0;
 		if (s.balance() >= 0) {
 			Balance before = storageBalances.put(s.name() + "|" + s.max(), new Balance(s.balance(), tick));
 			if (before != null && before.count() == s.balance()) {
-				stats.storageRepeats++;
+				if (counting) {
+					stats.storageRepeats++;
+					stats.storageRepeatItems += s.amount();
+					ItemDiag d = itemDiag(s.name());
+					d.repeats++;
+					d.repeatItems += s.amount();
+				}
 				note(what + " · 안 셈: 같은 알림이 또 옴 (저장소 개수 " + s.balance() + " 그대로)" + read);
 				return;
 			}
 			viaInventory = inventorySinceNotice.getOrDefault(s.name(), 0L);
 			inventorySinceNotice.remove(s.name());
-			if (before != null && s.balance() - before.count() > s.amount()) {
-				gap = s.balance() - before.count() - s.amount();
-				gapFrom = before.count();
-				gapWhy = gapRefusal(before.tick());
+			if (before != null) {
+				rise = s.balance() - before.count();
+				from = before.count();
+				why = baselineRefusal(before.tick());
 			}
 		} else {
 			long now = System.currentTimeMillis();
 			if (text.equals(lastNotice) && now - lastNoticeAt < 1500) {
 				stats.storageRepeats++;
+				stats.storageRepeatItems += s.amount();
 				note(what + " · 안 셈: 같은 알림이 1.5초 안에 또 옴");
 				return;
 			}
@@ -879,10 +938,37 @@ public final class Tracker {
 		if (fromScreen) {
 			stats.storageFromScreen++;
 		}
+		ItemDiag d = itemDiag(s.name());
+		d.notices++;
+		d.noticeItems += s.amount();
+		if (s.balance() >= 0) {
+			if (d.storageFrom < 0) {
+				d.storageFrom = Math.max(0, s.balance() - s.amount());
+			} else if (rise == Long.MIN_VALUE || why != null) {
+				d.mixed = true;
+			}
+			d.storageTo = s.balance();
+		}
 		ItemStack proto = protoFor(s.name());
-		int already = collect(proto, s.amount(), "저장소 알림" + (s.balance() >= 0 ? " (저장소 " + s.balance() + "개)" : "") + read);
-		if (gap > 0) {
-			fillGap(proto, s, gap, gapFrom, gapWhy, Math.max(0, viaInventory - already));
+		String how = "저장소 알림" + (s.balance() >= 0 ? " (저장소 " + s.balance() + "개)" : "") + read;
+		if (why == null && rise != Long.MIN_VALUE && rise < s.amount()) {
+			if (rise < 0) {
+				// the storage went down meanwhile (something taken out or used): the notice as it is
+				d.fromNotices += s.amount() - collect(proto, s.amount(), how + " · 저장소 개수가 줄어서 알림대로");
+				return;
+			}
+			int took = (int) rise;
+			long over = s.amount() - rise;
+			stats.storageCapped += over;
+			d.capped += over;
+			note(what + " · 저장소 " + from + " → " + s.balance() + "개로 " + took + "개만 늘어서 " + took + "개만 셈");
+			d.fromNotices += took - collect(proto, took, how);
+			return;
+		}
+		int already = collect(proto, s.amount(), how);
+		d.fromNotices += s.amount() - already;
+		if (rise != Long.MIN_VALUE && rise > s.amount()) {
+			fillGap(proto, s, rise - s.amount(), from, why, Math.max(0, viaInventory - already), d);
 		}
 	}
 
@@ -890,34 +976,43 @@ public final class Tracker {
 	 * The storage's count went up by {@code gap} more than the notice said. Filled in unless {@code why} says
 	 * otherwise; what the inventory counted since (it may have gone into the storage quietly) is taken out first.
 	 */
-	private void fillGap(ItemStack proto, StorageNotice.Stored s, long gap, long from, String why, long fromInventory) {
+	private void fillGap(ItemStack proto, StorageNotice.Stored s, long gap, long from, String why, long fromInventory,
+			ItemDiag d) {
 		String head = s.name() + " · 저장소 " + from + " → " + s.balance() + "개인데 알림은 " + s.amount() + "개";
 		long fill = gap - fromInventory;
 		if (why == null && fill <= 0) {
-			why = "인벤토리로 들어와서 이미 센 것";
+			note(head + ": 차이 " + gap + "개는 인벤토리로 이미 셈");
+			return;
 		}
 		if (why != null) {
-			stats.storageGap += gap;
 			note(head + ": 차이 " + gap + "개는 안 셈 (" + why + ")");
+			if (!why.equals(NEW_RECORDING)) {
+				// a rise from before this recording is not part of it
+				stats.storageGap += gap;
+				stats.gapWhy.merge(why, gap, Long::sum);
+				d.unfilled += gap;
+			}
 			return;
 		}
 		int amount = (int) Math.min(fill, Integer.MAX_VALUE);
 		stats.storageGapFilled += amount;
-		stats.storageGap += gap - amount;
+		d.filled += amount;
 		note(head + ": 놓친 알림 " + amount + "개를 채움" + (fromInventory > 0 ? " (인벤토리로 이미 센 " + fromInventory + "개 빼고)" : ""));
 		if (count(proto, amount)) {
 			inventory.pickedUp(keyOf(proto), amount, tick);
 		}
 	}
 
+	private static final String NEW_RECORDING = "그 사이 기록이 새로 시작됨";
+
 	/**
-	 * Why a jump in the storage's count since the item's last notice (at {@code since}) is not filled in, or null
-	 * to fill it: only while recording here the whole time, with no screen opened (putting things in by hand needs
-	 * one) and nothing taken out, and not long after.
+	 * Why the storage's count since the item's last notice (at {@code since}) is not all picked up, or null when it
+	 * is: recording here the whole time, with no screen opened (putting things in by hand needs one; the chat alone
+	 * does not count), no command sent and nothing taken out. However long ago.
 	 */
-	private String gapRefusal(long since) {
+	private String baselineRefusal(long since) {
 		if (!recording || recordingSince >= since) {
-			return "그 사이 기록이 새로 시작됨";
+			return NEW_RECORDING;
 		}
 		if (lastAwayTick >= since) {
 			return "그 사이 야생을 벗어났거나 채널을 옮김";
@@ -925,13 +1020,29 @@ public final class Tracker {
 		if (lastScreenTick >= since) {
 			return "그 사이 창을 열었음, 직접 넣었을 수 있음";
 		}
+		if (lastCommandTick >= since) {
+			return "그 사이 명령어를 씀";
+		}
 		if (lastWithdrawTick >= since) {
 			return "그 사이 인출이 있었음";
 		}
-		if (tick - since > GAP_FILL_TICKS) {
-			return "알림 사이가 2분 넘게 벌어짐";
-		}
 		return null;
+	}
+
+	/** A command the player sent to the server (not this mod's own /광질): the storage may change by it. */
+	public void onCommandSent(String command) {
+		if (command != null && !command.startsWith("광질")) {
+			lastCommandTick = tick;
+		}
+	}
+
+	ItemDiag itemDiag(String name) {
+		return itemDiags.computeIfAbsent(name, ItemDiag::new);
+	}
+
+	/** Each mineral's numbers this recording, in the order first seen. */
+	public List<ItemDiag> itemDiags() {
+		return new ArrayList<>(itemDiags.values());
 	}
 
 	/**

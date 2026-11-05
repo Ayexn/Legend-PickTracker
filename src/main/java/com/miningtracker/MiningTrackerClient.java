@@ -5,6 +5,7 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientEntityEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.message.v1.ClientSendMessageEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.fabricmc.fabric.api.event.client.player.ClientPlayerBlockBreakEvents;
@@ -30,6 +31,8 @@ public final class MiningTrackerClient implements ClientModInitializer {
 		ClientLifecycleEvents.CLIENT_STOPPING.register(client -> tracker.onClientStopping());
 		HudRenderCallback.EVENT.register(HudRenderer::onHudRender);
 		ClientCommandRegistrationCallback.EVENT.register(Commands::register);
+		// only to know that a command went out (one could change the storage); nothing is changed or sent
+		ClientSendMessageEvents.COMMAND.register(tracker::onCommandSent);
 
 		LOGGER.info("픽트래커가 켜졌어요");
 	}
