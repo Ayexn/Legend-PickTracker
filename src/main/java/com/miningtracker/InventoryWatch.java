@@ -134,9 +134,10 @@ final class InventoryWatch {
 
 	/** Counted already (a storage notice): when it shows up in the inventory, it is not counted again. */
 	void pickedUp(String key, int amount, long tick) {
-		int left = amount - take(growth, key, amount);
+		String name = nameOf(key);
+		int left = amount - takeNamed(growth, name, amount);
 		if (left > 0) {
-			pending.computeIfAbsent(key, k -> new ArrayDeque<>()).addLast(new Part(tick, left));
+			pending.computeIfAbsent(name, k -> new ArrayDeque<>()).addLast(new Part(tick, left));
 		}
 	}
 
@@ -145,7 +146,7 @@ final class InventoryWatch {
 	 * ago (it showed up in the inventory first). That part is not counted again.
 	 */
 	int alreadyCounted(String key, int amount) {
-		return take(credits, key, amount);
+		return take(credits, nameOf(key), amount);
 	}
 
 	/** Growth of {@code key} nothing has explained yet. */
@@ -260,7 +261,6 @@ final class InventoryWatch {
 		}
 		String why = before.isEmpty() ? "인벤토리가 새로 채워짐 (접속·리스폰·채널 이동)"
 				: tick < quietUntil ? quietWhy
-				: !fell.isEmpty() ? "같은 순간 줄어든 게 있어서 바뀐 것으로 봄 (줄어든 것: " + names(fell) + ")"
 				: null;
 		if (why != null) {
 			skipped++;
@@ -269,6 +269,15 @@ final class InventoryWatch {
 		}
 		for (Map.Entry<String, Integer> e : grew.entrySet()) {
 			String key = e.getKey();
+			String turned = turnedFrom(e.getValue(), fell);
+			if (turned != null) {
+				// e.g. nine diamonds became a block: not picked up. Anything else going down (a torch placed, food
+				// eaten) does not hide what came in.
+				skipped++;
+				counter.note(nameOf(key) + " " + e.getValue() + "개 · 인벤토리에 들어왔지만 안 셈: 같은 순간 "
+						+ turned + "이 줄어서 바뀐 것으로 봄");
+				continue;
+			}
 			Dip d = dips.get(key);
 			if (d != null && tick - d.tick() <= GIVE_BACK_TICKS && now.getOrDefault(key, 0) == d.from()) {
 				dips.remove(key);
@@ -299,6 +308,20 @@ final class InventoryWatch {
 		}
 	}
 
+	/**
+	 * What went down in the same tick that {@code grew} looks made from (one for one, nine or four into one, one into
+	 * nine or four), as "다이아몬드 9개"; or null.
+	 */
+	private static String turnedFrom(int grew, Map<String, Integer> fell) {
+		for (Map.Entry<String, Integer> f : fell.entrySet()) {
+			int down = f.getValue();
+			if (down == grew || down == grew * 9 || down == grew * 4 || grew == down * 9 || grew == down * 4) {
+				return nameOf(f.getKey()) + " " + down + "개";
+			}
+		}
+		return null;
+	}
+
 	/** The item's id part of a key (id|name). */
 	private static String idOf(String key) {
 		int bar = key.indexOf('|');
@@ -322,7 +345,7 @@ final class InventoryWatch {
 	}
 
 	private void grew(String key, int amount, long tick) {
-		int explained = take(pending, key, amount);
+		int explained = take(pending, nameOf(key), amount);
 		if (explained > 0) {
 			counter.note(nameOf(key) + " " + explained + "개 · 인벤토리에 들어옴, 이미 셈");
 		}
@@ -352,7 +375,7 @@ final class InventoryWatch {
 					countedItems += p.amount;
 					counter.count(proto, p.amount);
 					counter.note(nameOf(e.getKey()) + " +" + p.amount + " · 인벤토리로 바로 들어옴");
-					credits.computeIfAbsent(e.getKey(), k -> new ArrayDeque<>()).addLast(new Part(tick, p.amount));
+					credits.computeIfAbsent(nameOf(e.getKey()), k -> new ArrayDeque<>()).addLast(new Part(tick, p.amount));
 				}
 			}
 			if (parts.isEmpty()) {
@@ -377,6 +400,21 @@ final class InventoryWatch {
 				it.remove();
 			}
 		}
+	}
+
+	/** Takes up to {@code amount} out of every key with that name in {@code from}; how much it took. */
+	private static int takeNamed(Map<String, Deque<Part>> from, String name, int amount) {
+		int taken = 0;
+		for (Iterator<Map.Entry<String, Deque<Part>>> it = from.entrySet().iterator(); it.hasNext() && taken < amount; ) {
+			Map.Entry<String, Deque<Part>> e = it.next();
+			if (nameOf(e.getKey()).equals(name)) {
+				taken += take(e.getValue(), amount - taken);
+				if (e.getValue().isEmpty()) {
+					it.remove();
+				}
+			}
+		}
+		return taken;
 	}
 
 	/** Takes up to {@code amount} of {@code key} out of {@code from}, oldest first; how much it took. */

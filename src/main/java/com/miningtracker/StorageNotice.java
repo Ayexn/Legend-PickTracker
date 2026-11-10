@@ -9,8 +9,13 @@ import java.util.regex.Pattern;
  * {@code ... N개 인출} when the player takes things out. Only read; nothing is sent to the server.
  */
 final class StorageNotice {
+	/**
+	 * "[아이템 저장소] 다이아몬드 1개 수납! (270/30,000)", and the same said a little differently: something before the
+	 * tag (an icon), no space before the number ("철원석3개"), "x3", "1개를 수납했습니다", no count in brackets.
+	 */
 	private static final Pattern STORED = Pattern.compile(
-			"^\\[아이템\\s*저장소\\]\\s*(.+?)\\s+(\\d[\\d,]*)\\s*개\\s*수납\\s*!?\\s*(?:\\(\\s*(\\d[\\d,]*)\\s*/\\s*(\\d[\\d,]*)\\s*\\))?");
+			"\\[아이템\\s*저장소\\]\\s*(.+?)(?:\\s+[xX×]\\s*|\\s*)(\\d[\\d,]*)\\s*개?\\s*[을를]?\\s*수납[^(\\d]*"
+					+ "(?:\\(\\s*(\\d[\\d,]*)\\s*/\\s*(\\d[\\d,]*)\\s*\\))?");
 	private static final Pattern AMOUNT = Pattern.compile("(\\d[\\d,]*)\\s*개");
 	private static final Pattern FORMATTING = Pattern.compile("§.");
 
@@ -26,9 +31,9 @@ final class StorageNotice {
 		return FORMATTING.matcher(text).replaceAll("").strip();
 	}
 
-	/** A notice from the item storage at all. */
+	/** A notice from the item storage at all (something like an icon may come before the tag). */
 	static boolean isStorage(String text) {
-		return text.replace(" ", "").startsWith("[아이템저장소]");
+		return text.replace(" ", "").contains("[아이템저장소]");
 	}
 
 	/** "... N개 수납!": what went into the storage, or null. */

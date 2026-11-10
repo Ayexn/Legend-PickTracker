@@ -124,6 +124,8 @@ public final class Tracker {
 		public long storageRepeatItems;
 		/** {@link #storageGap} by why it was not filled in. */
 		public final Map<String, Long> gapWhy = new LinkedHashMap<>();
+		/** Lines from the item storage that could not be read (not counted). */
+		public long storageUnread;
 	}
 
 	/** One mineral in /광질 진단 광물: where its count came from, and how much the storage went up meanwhile. */
@@ -267,13 +269,16 @@ public final class Tracker {
 	/** The last line the hook saw, and the last line read off the screen (the same one stays up ~3 s). */
 	private Component lastHooked;
 	private Component lastShown;
-	/** The last notice that did not say the storage's count, and when (a repeat of it within 1.5 s is not counted). */
+	/** The last notice that did not say the storage's count, and its tick (the same line in the same tick is one). */
 	private String lastNotice = "";
-	private long lastNoticeAt;
+	private long lastNoticeTick = Long.MIN_VALUE;
+	/** The last storage line that could not be read (noted once, however long it stays up). */
+	private String lastUnread = "";
 	/** Items with each name picked up lately (as they left the ground): a storage notice only gives the name. */
 	private final Map<String, ItemStack> seenByName = new HashMap<>();
-	/** The game's items by their name in the game's language, made when first needed. */
+	/** The game's items by their name in the game's language, made when first needed, and a diamond's name then. */
 	private Map<String, Item> itemsByName;
+	private String itemsByNameProbe;
 	/** What was decided lately and why, for /광질 진단 최근 (oldest first). */
 	private final Deque<String> recent = new ArrayDeque<>();
 	private static final int RECENT_KEEP = 60;
@@ -443,6 +448,7 @@ public final class Tracker {
 		stats.storageFromScreen = 0;
 		stats.storageCapped = 0;
 		stats.storageRepeatItems = 0;
+		stats.storageUnread = 0;
 		stats.gapWhy.clear();
 		itemDiags.clear();
 		dirty = true;
@@ -875,6 +881,11 @@ public final class Tracker {
 			StorageNotice.Stored stored = StorageNotice.stored(text);
 			if (stored != null) {
 				onStored(stored, text, fromScreen);
+			} else if (!text.equals(lastUnread)) {
+				// a storage line this mod cannot read: kept as it is, so a change in the server's wording shows
+				lastUnread = text;
+				stats.storageUnread++;
+				note("못 읽은 저장소 글자 (안 셈): " + text);
 			}
 		} catch (RuntimeException e) {
 			MiningTrackerClient.LOGGER.warn("could not read a storage notice", e);
@@ -917,15 +928,15 @@ public final class Tracker {
 				why = baselineRefusal(before.tick());
 			}
 		} else {
-			long now = System.currentTimeMillis();
-			if (text.equals(lastNotice) && now - lastNoticeAt < 1500) {
+			// without the storage's count two pickups can read the same, so only the same line in the same tick is one
+			if (text.equals(lastNotice) && tick == lastNoticeTick) {
 				stats.storageRepeats++;
 				stats.storageRepeatItems += s.amount();
-				note(what + " · 안 셈: 같은 알림이 1.5초 안에 또 옴");
+				note(what + " · 안 셈: 같은 알림이 같은 순간에 또 옴");
 				return;
 			}
 			lastNotice = text;
-			lastNoticeAt = now;
+			lastNoticeTick = tick;
 		}
 		if (!counting) {
 			stats.storageNotRecording++;
@@ -1069,8 +1080,11 @@ public final class Tracker {
 	}
 
 	private Item itemNamed(String name) {
-		if (itemsByName == null) {
+		// made again when the game's language changed (a diamond is called something else now)
+		String probe = new ItemStack(Items.DIAMOND).getHoverName().getString();
+		if (itemsByName == null || !probe.equals(itemsByNameProbe)) {
 			itemsByName = new HashMap<>();
+			itemsByNameProbe = probe;
 			for (Item item : BuiltInRegistries.ITEM) {
 				itemsByName.putIfAbsent(new ItemStack(item).getHoverName().getString(), item);
 			}
@@ -1104,7 +1118,7 @@ public final class Tracker {
 		if (amount <= 0 || !recording) {
 			return false;
 		}
-		String key = keyOf(proto);
+		String key = tallyKey(proto);
 		ItemTally t = items.get(key);
 		if (t == null) {
 			t = new ItemTally(key, proto, isOther(proto));
@@ -1133,6 +1147,59 @@ public final class Tracker {
 			toasts.push(key, t.icon, t.name, amount, t.count, tick);
 		}
 		return true;
+	}
+
+	/**
+	 * Which line of the board {@code proto} counts on. A notice only gives a name; when no item with it was known, it
+	 * counted as paper with that name (a guess). One name stays one line: a guess joins the item already counted
+	 * under that name, and once the real item turns up, what the guess counted moves over to it.
+	 */
+	private String tallyKey(ItemStack proto) {
+		String key = keyOf(proto);
+		String name = proto.getHoverName().getString();
+		boolean guess = isGuess(proto);
+		for (ItemTally t : new ArrayList<>(items.values())) {
+			if (t.other || !t.name.equals(name) || t.key.equals(key)) {
+				continue;
+			}
+			if (guess) {
+				return t.key;
+			}
+			if (isGuess(t.icon)) {
+				moveTally(t, key, proto);
+				return key;
+			}
+		}
+		return key;
+	}
+
+	/** Paper with a name and no look of its own: what a notice counted as when no item with its name was known. */
+	private static boolean isGuess(ItemStack stack) {
+		return stack.getItem() == Items.PAPER && History.Look.of(stack) == null;
+	}
+
+	/** Moves a guessed line's count (board and recording) to the real item. */
+	private void moveTally(ItemTally guessed, String key, ItemStack proto) {
+		items.remove(guessed.key);
+		ItemTally real = items.computeIfAbsent(key, k -> new ItemTally(k, proto, false));
+		real.count += guessed.count;
+		if (session != null) {
+			History.Item was = session.items.remove(guessed.key);
+			if (was != null) {
+				History.Item it = session.items.get(key);
+				if (it == null) {
+					it = new History.Item();
+					it.id = BuiltInRegistries.ITEM.getKey(proto.getItem()).toString();
+					it.name = real.name;
+					it.look = History.Look.of(proto);
+					History.rememberLook(key, it.look);
+					session.items.put(key, it);
+				}
+				it.count += was.count;
+			}
+		}
+		dirty = true;
+		note(real.name + " · 이름만 알던 것(" + guessed.count + "개)을 실제 아이템으로 합침");
 	}
 
 	/** The inventory watch, for /광질 진단. */

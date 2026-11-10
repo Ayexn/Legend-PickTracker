@@ -129,7 +129,8 @@ public final class Commands {
 		lines.add(" 저장소 알림으로 센 획득: " + s.storageNotices + "번 (" + s.storageItems + "개)"
 				+ (s.storageFromScreen > 0 ? " · 그중 화면 글자로 읽은 것 " + s.storageFromScreen + "번" : "")
 				+ (s.storageRepeats > 0 ? " · 같은 알림이라 뺀 것 " + s.storageRepeats + "번 (" + s.storageRepeatItems + "개)" : "")
-				+ (s.storageNotRecording > 0 ? " · 기록 중이 아니거나 야생이 아니라 뺀 것 " + s.storageNotRecording + "번" : ""));
+				+ (s.storageNotRecording > 0 ? " · 기록 중이 아니거나 야생이 아니라 뺀 것 " + s.storageNotRecording + "번" : "")
+				+ (s.storageUnread > 0 ? " · 못 읽은 저장소 글자 " + s.storageUnread + "번 (/광질 진단 최근)" : ""));
 		if (s.storageGapFilled > 0 || s.storageGap > 0 || s.storageCapped > 0 || s.storageUnknown > 0 || s.withdrawals > 0) {
 			lines.add(" 놓친 알림으로 채운 것: " + s.storageGapFilled + "개 · 저장소가 더 늘었지만 안 센 것: " + s.storageGap
 					+ "개 · 알림보다 저장소가 덜 늘어서 뺀 것: " + s.storageCapped + "개 · 이름을 몰라 종이로 센 것: "
